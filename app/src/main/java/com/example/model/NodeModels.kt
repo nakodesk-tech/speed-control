@@ -8,9 +8,13 @@ enum class DetectedPlayerType(val displayName: String) {
 
 data class SpeedActionDiagnostics(
     val packageName: String = "",
+    val targetPackage: String? = null,
     val requestedSpeed: String = "1.0x",
     val requestedSpeedFloat: Float = 1.0f,
     val detectedPlayerType: DetectedPlayerType = DetectedPlayerType.CUSTOM_UNKNOWN,
+    val rootsTotal: Int = 0,
+    val targetRootsUsed: Int = 0,
+    val excludedRoots: Int = 0,
     val speedTriggerFound: Boolean = false,
     val speedTriggerClicked: Boolean = false,
     val speedTriggerViewId: String? = null,
@@ -18,6 +22,8 @@ data class SpeedActionDiagnostics(
     val speedOptionFound: Boolean = false,
     val speedOptionText: String? = null,
     val speedOptionResourceId: String? = null,
+    val matchedPackage: String? = null,
+    val matchedDescription: String? = null,
     val clickResult: Boolean = false,
     val verificationResult: Boolean = false,
     val finalDetectedSpeed: String? = null,
@@ -137,6 +143,12 @@ data class TraversalDiagnostics(
     val matchedByHeuristic: String? = null,
     val success: Boolean = false,
     val currentForegroundPackage: String = "",
+    val targetPackage: String? = null,
+    val rootsTotal: Int = 0,
+    val targetRootsUsed: Int = 0,
+    val excludedRoots: Int = 0,
+    val matchedPackage: String? = null,
+    val matchedDescription: String? = null,
     val detectedPlayerType: DetectedPlayerType = DetectedPlayerType.CUSTOM_UNKNOWN,
     val speedDiagnostics: SpeedActionDiagnostics? = null
 )

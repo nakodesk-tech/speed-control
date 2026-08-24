@@ -113,9 +113,10 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
      */
     private fun checkAndSyncPlaybackStatus() {
         try {
-            val roots = getAllWindowRoots()
-            if (roots.isNotEmpty()) {
-                val status = optimizer.detectVideoPlaybackStatus(roots, audioManager)
+            val currentPkg = CompanionStateManager.uiState.value.foregroundPackage
+            val targetRoots = getTargetAppWindowRoots(currentPkg)
+            if (targetRoots.isNotEmpty()) {
+                val status = optimizer.detectVideoPlaybackStatus(targetRoots, audioManager, currentPkg, packageName)
                 CompanionStateManager.updateDetectedPlaybackStatus(
                     isPlaying = status.isPlaying,
                     source = status.source,
@@ -163,19 +164,34 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Performs a comprehensive diagnostic scan across all window roots with up to 2500+ node limit.
+     * Filters all window roots to return ONLY the accessibility roots that belong to the active target application.
+     * Guaranteed to exclude our floating overlay and Android System UI.
+     */
+    fun getTargetAppWindowRoots(targetPackage: String? = null): List<AccessibilityNodeInfo> {
+        val all = getAllWindowRoots()
+        val ourPkg = packageName
+        val effectiveTargetPkg = if (!targetPackage.isNullOrBlank()) targetPackage else CompanionStateManager.uiState.value.foregroundPackage
+
+        return all.filter { root ->
+            optimizer.isNodeFromTargetPackage(root, effectiveTargetPkg, ourPkg)
+        }
+    }
+
+    /**
+     * Performs a comprehensive diagnostic scan across target window roots with up to 2500+ node limit.
      * Logs full node tree, discovers actual playback speed options, settings nodes, and media controls.
      */
     fun performDiscoveryScan(
         scanType: com.example.model.DiscoveryScanType = com.example.model.DiscoveryScanType.FULL_PLAYER_SCAN
     ): com.example.model.DiscoverySnapshot {
-        val roots = getAllWindowRoots()
         val state = CompanionStateManager.uiState.value
         val currentPkg = state.foregroundPackage
         val currentTitle = state.foregroundAppTitle
+        val targetRoots = getTargetAppWindowRoots(currentPkg)
+        val rootsToScan = if (targetRoots.isNotEmpty()) targetRoots else getAllWindowRoots()
 
         val snapshot = optimizer.performDiagnosticDiscoveryScan(
-            roots = roots,
+            roots = rootsToScan,
             scanType = scanType,
             foregroundPkg = currentPkg,
             foregroundTitle = currentTitle,
@@ -189,8 +205,8 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
     /**
      * Detects on-screen bounding rectangle of the video player in the foreground app.
      */
-    fun detectPlayerBounds(roots: List<AccessibilityNodeInfo>): Rect {
-        val descriptor = optimizer.inspectVideoPlayerTargets(roots)
+    fun detectPlayerBounds(roots: List<AccessibilityNodeInfo>, targetPackage: String? = null): Rect {
+        val descriptor = optimizer.inspectVideoPlayerTargets(roots, targetPackage, packageName)
         if (!descriptor.playerBounds.isEmpty && descriptor.playerBounds.width() > 200) {
             return descriptor.playerBounds
         }
@@ -217,8 +233,13 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             val startTime = SystemClock.uptimeMillis()
             val currentPkg = CompanionStateManager.uiState.value.foregroundPackage
 
-            val roots = getAllWindowRoots()
-            val playerBounds = detectPlayerBounds(roots)
+            val allRoots = getAllWindowRoots()
+            val roots = getTargetAppWindowRoots(currentPkg)
+            val rootsTotal = allRoots.size
+            val targetRootsUsed = roots.size
+            val excludedRoots = (rootsTotal - targetRootsUsed).coerceAtLeast(0)
+
+            val playerBounds = detectPlayerBounds(roots, currentPkg)
             val playerCenterX = playerBounds.centerX().toFloat()
             val playerCenterY = playerBounds.centerY().toFloat()
             val playerLeftX = (playerBounds.left + playerBounds.width() * 0.22f).coerceAtLeast(40f)
@@ -233,14 +254,33 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                 }
 
                 MediaActionType.PLAY_PAUSE, MediaActionType.PLAY, MediaActionType.PAUSE -> {
-                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
+                    diag = optimizer.performMediaActionAcrossRoots(
+                        roots = roots,
+                        actionType = actionType,
+                        customIds = customIds,
+                        speedTargetText = speedParam,
+                        targetPackage = currentPkg,
+                        ourPackageName = packageName,
+                        rootsTotal = rootsTotal,
+                        excludedRoots = excludedRoots
+                    )
                     if (!diag.success) {
                         // Wake up faded controls with a center tap
                         performTap(playerCenterX, playerCenterY)
                         delay(120L)
 
-                        val freshRoots = getAllWindowRoots()
-                        val retryDiag = optimizer.performMediaActionAcrossRoots(freshRoots, actionType, customIds, speedParam)
+                        val freshAllRoots = getAllWindowRoots()
+                        val freshRoots = getTargetAppWindowRoots(currentPkg)
+                        val retryDiag = optimizer.performMediaActionAcrossRoots(
+                            roots = freshRoots,
+                            actionType = actionType,
+                            customIds = customIds,
+                            speedTargetText = speedParam,
+                            targetPackage = currentPkg,
+                            ourPackageName = packageName,
+                            rootsTotal = freshAllRoots.size,
+                            excludedRoots = (freshAllRoots.size - freshRoots.size).coerceAtLeast(0)
+                        )
                         if (retryDiag.success) {
                             diag = retryDiag.copy(matchedByHeuristic = "Wake-Up Tap + Click (${retryDiag.matchedViewId})")
                         } else {
@@ -254,7 +294,11 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                                 matchedAction = actionType,
                                 matchedByHeuristic = if (centerTapped) "Player Center Touch" else "Media Key Dispatch",
                                 success = centerTapped || keyDispatched,
-                                currentForegroundPackage = currentPkg
+                                currentForegroundPackage = currentPkg,
+                                targetPackage = currentPkg,
+                                rootsTotal = rootsTotal,
+                                targetRootsUsed = targetRootsUsed,
+                                excludedRoots = excludedRoots
                             )
                         }
                     } else {
@@ -263,13 +307,32 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                 }
 
                 MediaActionType.FAST_FORWARD -> {
-                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
+                    diag = optimizer.performMediaActionAcrossRoots(
+                        roots = roots,
+                        actionType = actionType,
+                        customIds = customIds,
+                        speedTargetText = speedParam,
+                        targetPackage = currentPkg,
+                        ourPackageName = packageName,
+                        rootsTotal = rootsTotal,
+                        excludedRoots = excludedRoots
+                    )
                     if (!diag.success) {
                         performTap(playerCenterX, playerCenterY)
                         delay(120L)
 
-                        val freshRoots = getAllWindowRoots()
-                        val retryDiag = optimizer.performMediaActionAcrossRoots(freshRoots, actionType, customIds, speedParam)
+                        val freshAllRoots = getAllWindowRoots()
+                        val freshRoots = getTargetAppWindowRoots(currentPkg)
+                        val retryDiag = optimizer.performMediaActionAcrossRoots(
+                            roots = freshRoots,
+                            actionType = actionType,
+                            customIds = customIds,
+                            speedTargetText = speedParam,
+                            targetPackage = currentPkg,
+                            ourPackageName = packageName,
+                            rootsTotal = freshAllRoots.size,
+                            excludedRoots = (freshAllRoots.size - freshRoots.size).coerceAtLeast(0)
+                        )
                         if (retryDiag.success) {
                             diag = retryDiag.copy(matchedByHeuristic = "Wake-Up + Fast Forward Click")
                         } else {
@@ -283,7 +346,11 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                                 matchedAction = actionType,
                                 matchedByHeuristic = "Double-Tap +10s Forward",
                                 success = gestureDone || keyDispatched,
-                                currentForegroundPackage = currentPkg
+                                currentForegroundPackage = currentPkg,
+                                targetPackage = currentPkg,
+                                rootsTotal = rootsTotal,
+                                targetRootsUsed = targetRootsUsed,
+                                excludedRoots = excludedRoots
                             )
                         }
                     } else {
@@ -292,13 +359,32 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                 }
 
                 MediaActionType.REWIND -> {
-                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
+                    diag = optimizer.performMediaActionAcrossRoots(
+                        roots = roots,
+                        actionType = actionType,
+                        customIds = customIds,
+                        speedTargetText = speedParam,
+                        targetPackage = currentPkg,
+                        ourPackageName = packageName,
+                        rootsTotal = rootsTotal,
+                        excludedRoots = excludedRoots
+                    )
                     if (!diag.success) {
                         performTap(playerCenterX, playerCenterY)
                         delay(120L)
 
-                        val freshRoots = getAllWindowRoots()
-                        val retryDiag = optimizer.performMediaActionAcrossRoots(freshRoots, actionType, customIds, speedParam)
+                        val freshAllRoots = getAllWindowRoots()
+                        val freshRoots = getTargetAppWindowRoots(currentPkg)
+                        val retryDiag = optimizer.performMediaActionAcrossRoots(
+                            roots = freshRoots,
+                            actionType = actionType,
+                            customIds = customIds,
+                            speedTargetText = speedParam,
+                            targetPackage = currentPkg,
+                            ourPackageName = packageName,
+                            rootsTotal = freshAllRoots.size,
+                            excludedRoots = (freshAllRoots.size - freshRoots.size).coerceAtLeast(0)
+                        )
                         if (retryDiag.success) {
                             diag = retryDiag.copy(matchedByHeuristic = "Wake-Up + Rewind Click")
                         } else {
@@ -312,7 +398,11 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                                 matchedAction = actionType,
                                 matchedByHeuristic = "Double-Tap -10s Rewind",
                                 success = gestureDone || keyDispatched,
-                                currentForegroundPackage = currentPkg
+                                currentForegroundPackage = currentPkg,
+                                targetPackage = currentPkg,
+                                rootsTotal = rootsTotal,
+                                targetRootsUsed = targetRootsUsed,
+                                excludedRoots = excludedRoots
                             )
                         }
                     } else {
@@ -321,12 +411,31 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                 }
 
                 MediaActionType.NEXT, MediaActionType.PREVIOUS -> {
-                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
+                    diag = optimizer.performMediaActionAcrossRoots(
+                        roots = roots,
+                        actionType = actionType,
+                        customIds = customIds,
+                        speedTargetText = speedParam,
+                        targetPackage = currentPkg,
+                        ourPackageName = packageName,
+                        rootsTotal = rootsTotal,
+                        excludedRoots = excludedRoots
+                    )
                     if (!diag.success) {
                         performTap(playerCenterX, playerCenterY)
                         delay(120L)
-                        val freshRoots = getAllWindowRoots()
-                        val retryNext = optimizer.performMediaActionAcrossRoots(freshRoots, actionType, customIds, speedParam)
+                        val freshAllRoots = getAllWindowRoots()
+                        val freshRoots = getTargetAppWindowRoots(currentPkg)
+                        val retryNext = optimizer.performMediaActionAcrossRoots(
+                            roots = freshRoots,
+                            actionType = actionType,
+                            customIds = customIds,
+                            speedTargetText = speedParam,
+                            targetPackage = currentPkg,
+                            ourPackageName = packageName,
+                            rootsTotal = freshAllRoots.size,
+                            excludedRoots = (freshAllRoots.size - freshRoots.size).coerceAtLeast(0)
+                        )
                         if (retryNext.success) {
                             diag = retryNext.copy(matchedByHeuristic = "Wake-Up + ${actionType.name} Click")
                         } else {
@@ -339,7 +448,11 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                                 matchedAction = actionType,
                                 matchedByHeuristic = "System Media Key (${actionType.name})",
                                 success = keyDispatched,
-                                currentForegroundPackage = currentPkg
+                                currentForegroundPackage = currentPkg,
+                                targetPackage = currentPkg,
+                                rootsTotal = rootsTotal,
+                                targetRootsUsed = targetRootsUsed,
+                                excludedRoots = excludedRoots
                             )
                         }
                     } else {
@@ -348,11 +461,26 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                 }
 
                 else -> {
-                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
+                    diag = optimizer.performMediaActionAcrossRoots(
+                        roots = roots,
+                        actionType = actionType,
+                        customIds = customIds,
+                        speedTargetText = speedParam,
+                        targetPackage = currentPkg,
+                        ourPackageName = packageName,
+                        rootsTotal = rootsTotal,
+                        excludedRoots = excludedRoots
+                    )
                 }
             }
 
-            val fullDiag = diag.copy(currentForegroundPackage = currentPkg)
+            val fullDiag = diag.copy(
+                currentForegroundPackage = currentPkg,
+                targetPackage = currentPkg,
+                rootsTotal = rootsTotal,
+                targetRootsUsed = targetRootsUsed,
+                excludedRoots = excludedRoots
+            )
             CompanionStateManager.updateDiagnostics(fullDiag)
 
             // Persist log to Room DB
@@ -377,9 +505,9 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
     /**
      * Robust Sequential Speed Control Execution Engine:
      * 1. Detects real runtime player type (Native ExoPlayer, WebView/HTML5, Custom/Unknown).
-     * 2. Inspects current UI for exact numeric speed option across all window roots.
+     * 2. Inspects current UI for exact numeric speed option across target window roots.
      * 3. If not visible, wakes controls and clicks speed trigger/settings gear/custom player menu.
-     * 4. Polls refreshed accessibility roots for speed popup/dialog across ALL windows.
+     * 4. Polls refreshed accessibility roots for speed popup/dialog across target windows.
      * 5. Clicks the exact requested speed option with coordinate fallback on runtime node bounds.
      * 6. Verifies selected speed and reports accurate, un-falsified structured diagnostics.
      */
@@ -390,7 +518,12 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
         startTime: Long
     ): TraversalDiagnostics {
         val targetSpeedFloat = optimizer.normalizeSpeedLabel(targetSpeedText) ?: 1.0f
-        var roots = getAllWindowRoots()
+        val allRoots = getAllWindowRoots()
+        var roots = getTargetAppWindowRoots(currentPkg)
+        val rootsTotal = allRoots.size
+        val targetRootsUsed = roots.size
+        val excludedRoots = (rootsTotal - targetRootsUsed).coerceAtLeast(0)
+
         val playerType = optimizer.detectRuntimePlayerType(roots)
 
         var speedTriggerFound = false
@@ -403,24 +536,28 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
         var clickResult = false
         var verificationResult = false
         var finalDetectedSpeed: String? = null
+        var matchedPackage: String? = null
+        var matchedDescription: String? = null
 
-        val playerBounds = detectPlayerBounds(roots)
+        val playerBounds = detectPlayerBounds(roots, currentPkg)
         val playerCenterX = playerBounds.centerX().toFloat()
         val playerCenterY = playerBounds.centerY().toFloat()
 
         // PATH 1 & 3: Multi-tier Execution Sequence
 
-        // Tier 1: Check if exact speed option is ALREADY directly visible across roots
-        var targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeedFloat)
+        // Tier 1: Check if exact speed option is ALREADY directly visible across target roots
+        var targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeedFloat, currentPkg, packageName)
         if (targetOptionNode != null) {
             speedOptionFound = true
             speedOptionText = targetOptionNode.text?.toString() ?: targetOptionNode.contentDescription?.toString()
             speedOptionResourceId = targetOptionNode.viewIdResourceName
-            clickResult = optimizer.executeClick(targetOptionNode)
+            matchedPackage = targetOptionNode.packageName?.toString()
+            matchedDescription = speedOptionText
+            clickResult = optimizer.executeClick(targetOptionNode, currentPkg, packageName)
             if (clickResult) {
                 delay(220L)
-                val postRoots = getAllWindowRoots()
-                val detected = optimizer.detectCurrentSelectedSpeed(postRoots)
+                val postRoots = getTargetAppWindowRoots(currentPkg)
+                val detected = optimizer.detectCurrentSelectedSpeed(postRoots, currentPkg, packageName)
                 if (detected != null) {
                     finalDetectedSpeed = String.format(Locale.US, "%.2fx", detected)
                     verificationResult = optimizer.speedValuesEqual(detected, targetSpeedFloat)
@@ -428,22 +565,24 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Tier 2: If not found, wake controls and check again
+        // Tier 2: If not found, wake controls and check again in target roots
         if (!clickResult) {
             performTap(playerCenterX, playerCenterY, 50L)
             delay(150L)
-            roots = getAllWindowRoots()
+            roots = getTargetAppWindowRoots(currentPkg)
 
-            targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeedFloat)
+            targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeedFloat, currentPkg, packageName)
             if (targetOptionNode != null) {
                 speedOptionFound = true
                 speedOptionText = targetOptionNode.text?.toString() ?: targetOptionNode.contentDescription?.toString()
                 speedOptionResourceId = targetOptionNode.viewIdResourceName
-                clickResult = optimizer.executeClick(targetOptionNode)
+                matchedPackage = targetOptionNode.packageName?.toString()
+                matchedDescription = speedOptionText
+                clickResult = optimizer.executeClick(targetOptionNode, currentPkg, packageName)
                 if (clickResult) {
                     delay(220L)
-                    val postRoots = getAllWindowRoots()
-                    val detected = optimizer.detectCurrentSelectedSpeed(postRoots)
+                    val postRoots = getTargetAppWindowRoots(currentPkg)
+                    val detected = optimizer.detectCurrentSelectedSpeed(postRoots, currentPkg, packageName)
                     if (detected != null) {
                         finalDetectedSpeed = String.format(Locale.US, "%.2fx", detected)
                         verificationResult = optimizer.speedValuesEqual(detected, targetSpeedFloat)
@@ -452,60 +591,65 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Tier 3: Find speed trigger / settings gear / custom player menu button
+        // Tier 3: Find speed trigger / settings gear / custom player menu button inside target roots
         if (!clickResult) {
-            val speedTrigger = optimizer.findSpeedTriggerNode(roots, customIds)
+            val speedTrigger = optimizer.findSpeedTriggerNode(roots, customIds, currentPkg, packageName)
             if (speedTrigger != null) {
                 speedTriggerFound = true
                 speedTriggerViewId = speedTrigger.viewIdResourceName
-                speedTriggerClicked = optimizer.executeClick(speedTrigger)
+                matchedPackage = speedTrigger.packageName?.toString()
+                speedTriggerClicked = optimizer.executeClick(speedTrigger, currentPkg, packageName)
             } else {
-                val settingsGear = optimizer.findSettingsGearNode(roots)
+                val settingsGear = optimizer.findSettingsGearNode(roots, currentPkg, packageName)
                 if (settingsGear != null) {
                     speedTriggerFound = true
                     speedTriggerViewId = settingsGear.viewIdResourceName
-                    val gearClicked = optimizer.executeClick(settingsGear)
+                    matchedPackage = settingsGear.packageName?.toString()
+                    val gearClicked = optimizer.executeClick(settingsGear, currentPkg, packageName)
                     if (gearClicked) {
                         speedTriggerClicked = true
                         delay(200L)
-                        val settingsRoots = getAllWindowRoots()
-                        val speedMenuItem = optimizer.findPlaybackSpeedMenuItem(settingsRoots)
+                        val settingsRoots = getTargetAppWindowRoots(currentPkg)
+                        val speedMenuItem = optimizer.findPlaybackSpeedMenuItem(settingsRoots, currentPkg, packageName)
                         if (speedMenuItem != null) {
                             menuDetected = true
-                            optimizer.executeClick(speedMenuItem)
+                            optimizer.executeClick(speedMenuItem, currentPkg, packageName)
                         }
                     }
                 } else {
                     // Fallback for custom player views without named IDs
-                    val customTriggers = optimizer.findCustomPlayerCandidateTriggers(roots, playerBounds)
+                    val customTriggers = optimizer.findCustomPlayerCandidateTriggers(roots, playerBounds, currentPkg, packageName)
                     for (candidate in customTriggers) {
-                        val clicked = optimizer.executeClick(candidate)
+                        val clicked = optimizer.executeClick(candidate, currentPkg, packageName)
                         if (clicked) {
                             speedTriggerFound = true
                             speedTriggerClicked = true
                             speedTriggerViewId = candidate.viewIdResourceName ?: candidate.className?.toString()
+                            matchedPackage = candidate.packageName?.toString()
                             break
                         }
                     }
                 }
             }
 
-            // Tier 4: Wait & poll across ALL window roots for speed option popup / bottom sheet
+            // Tier 4: Wait & poll across target window roots for speed option popup / bottom sheet
             var pollAttempts = 0
             val maxPollAttempts = 10
             while (pollAttempts < maxPollAttempts && !clickResult) {
                 delay(120L)
                 pollAttempts++
-                val popupRoots = getAllWindowRoots()
-                val optionNode = optimizer.findExactSpeedOptionNode(popupRoots, targetSpeedFloat)
+                val popupRoots = getTargetAppWindowRoots(currentPkg)
+                val optionNode = optimizer.findExactSpeedOptionNode(popupRoots, targetSpeedFloat, currentPkg, packageName)
                 if (optionNode != null) {
                     menuDetected = true
                     speedOptionFound = true
                     speedOptionText = optionNode.text?.toString() ?: optionNode.contentDescription?.toString()
                     speedOptionResourceId = optionNode.viewIdResourceName
+                    matchedPackage = optionNode.packageName?.toString()
+                    matchedDescription = speedOptionText
 
-                    // Attempt ACTION_CLICK or clickable parent
-                    clickResult = optimizer.executeClick(optionNode)
+                    // Attempt ACTION_CLICK on target node
+                    clickResult = optimizer.executeClick(optionNode, currentPkg, packageName)
 
                     // Coordinate tap fallback on runtime-discovered node bounds as LAST RESORT
                     if (!clickResult) {
@@ -518,8 +662,8 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
 
                     if (clickResult) {
                         delay(220L)
-                        val postRoots = getAllWindowRoots()
-                        val detected = optimizer.detectCurrentSelectedSpeed(postRoots)
+                        val postRoots = getTargetAppWindowRoots(currentPkg)
+                        val detected = optimizer.detectCurrentSelectedSpeed(postRoots, currentPkg, packageName)
                         if (detected != null) {
                             finalDetectedSpeed = String.format(Locale.US, "%.2fx", detected)
                             verificationResult = optimizer.speedValuesEqual(detected, targetSpeedFloat)
@@ -535,7 +679,10 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
         val finalResultStr = if (isSuccessful) "SUCCESS" else "FAILURE"
 
         val structuredLog = buildString {
-            appendLine("package=$currentPkg")
+            appendLine("targetPackage=$currentPkg")
+            appendLine("rootsTotal=$rootsTotal")
+            appendLine("targetRootsUsed=$targetRootsUsed")
+            appendLine("excludedRoots=$excludedRoots")
             appendLine("requested=$targetSpeedText")
             appendLine("playerType=${playerType.displayName}")
             appendLine("triggerFound=$speedTriggerFound")
@@ -544,6 +691,7 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             appendLine("optionFound=$speedOptionFound")
             appendLine("optionText=${speedOptionText ?: "None"}")
             appendLine("optionResourceId=${speedOptionResourceId ?: "None"}")
+            appendLine("matchedPackage=${matchedPackage ?: "None"}")
             appendLine("clickResult=$clickResult")
             appendLine("verificationResult=$verificationResult")
             appendLine("finalDetectedSpeed=${finalDetectedSpeed ?: "Unknown"}")
@@ -568,7 +716,13 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             verificationResult = verificationResult,
             finalDetectedSpeed = finalDetectedSpeed,
             finalResult = finalResultStr,
-            structuredLog = structuredLog
+            structuredLog = structuredLog,
+            targetPackage = currentPkg,
+            rootsTotal = rootsTotal,
+            targetRootsUsed = targetRootsUsed,
+            excludedRoots = excludedRoots,
+            matchedPackage = matchedPackage,
+            matchedDescription = matchedDescription
         )
 
         // Note: If successful, update current detected speed in state
@@ -591,7 +745,13 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             success = isSuccessful,
             currentForegroundPackage = currentPkg,
             detectedPlayerType = playerType,
-            speedDiagnostics = speedDiag
+            speedDiagnostics = speedDiag,
+            targetPackage = currentPkg,
+            rootsTotal = rootsTotal,
+            targetRootsUsed = targetRootsUsed,
+            excludedRoots = excludedRoots,
+            matchedPackage = matchedPackage,
+            matchedDescription = matchedDescription
         )
     }
 

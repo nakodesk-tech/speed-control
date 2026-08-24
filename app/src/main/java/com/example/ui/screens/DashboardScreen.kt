@@ -722,6 +722,19 @@ fun DashboardScreen() {
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
+                                Text("Window Roots (Total / Target / Excl):", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text(
+                                    "${state.lastDiagnostics.rootsTotal} total / ${state.lastDiagnostics.targetRootsUsed} used (${state.lastDiagnostics.excludedRoots} overlay/sys excluded)",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF38BDF8)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
                                 Text("Last Action / Matched ID:", fontSize = 11.sp, color = Color(0xFF94A3B8))
                                 Text(state.lastDiagnostics.matchedViewId ?: "N/A", fontSize = 11.sp, color = Color(0xFFA7F3D0))
                             }

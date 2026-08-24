@@ -293,10 +293,48 @@ class AccessibilityNodeOptimizer(
     // =========================================================================
 
     /**
+     * Safety Check: Verifies that a node belongs strictly to the active target application package,
+     * and guarantees that our own companion overlay and Android System UI are never clicked.
+     */
+    fun isNodeFromTargetPackage(
+        node: AccessibilityNodeInfo?,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): Boolean {
+        if (node == null) return false
+        val nodePkg = node.packageName?.toString().orEmpty()
+
+        // Hard-reject our own overlay, app package, and Android System UI
+        if (nodePkg.isNotEmpty()) {
+            if (ourPackageName != null && nodePkg == ourPackageName) return false
+            if (nodePkg.contains("educompanion") ||
+                nodePkg.contains("com.example") ||
+                nodePkg.contains("systemui") ||
+                nodePkg.contains("com.android.systemui")
+            ) {
+                return false
+            }
+        }
+
+        // If targetPackage is provided, enforce that node belongs to targetPackage
+        if (!targetPackage.isNullOrBlank()) {
+            if (nodePkg.isNotEmpty() && nodePkg != targetPackage) {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    /**
      * Comprehensive Video Player Target Detector:
      * Identifies player surface, control bounds, settings gear, and open speed menus.
      */
-    fun inspectVideoPlayerTargets(roots: List<AccessibilityNodeInfo>): VideoPlayerTargetDescriptor {
+    fun inspectVideoPlayerTargets(
+        roots: List<AccessibilityNodeInfo>,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): VideoPlayerTargetDescriptor {
         val rect = Rect()
         var playerBounds = Rect()
         var playerNode: AccessibilityNodeInfo? = null
@@ -313,6 +351,7 @@ class AccessibilityNodeOptimizer(
         )
 
         for (root in roots) {
+            if (!isNodeFromTargetPackage(root, targetPackage, ourPackageName)) continue
             val queue = ArrayDeque<AccessibilityNodeInfo>()
             queue.add(root)
             var count = 0
@@ -320,6 +359,8 @@ class AccessibilityNodeOptimizer(
             while (queue.isNotEmpty() && count < config.maxNodesLimit) {
                 val node = queue.poll() ?: break
                 count++
+
+                if (!isNodeFromTargetPackage(node, targetPackage, ourPackageName)) continue
 
                 val id = node.viewIdResourceName?.lowercase().orEmpty()
                 val className = node.className?.toString()?.lowercase().orEmpty()
@@ -385,7 +426,11 @@ class AccessibilityNodeOptimizer(
                 }
 
                 for (i in 0 until node.childCount) {
-                    node.getChild(i)?.let { queue.add(it) }
+                    node.getChild(i)?.let {
+                        if (isNodeFromTargetPackage(it, targetPackage, ourPackageName)) {
+                            queue.add(it)
+                        }
+                    }
                 }
             }
         }
@@ -403,18 +448,29 @@ class AccessibilityNodeOptimizer(
     }
 
     /**
-     * Searches all window roots for the EXACT requested speed option node (e.g. 1.25x, 2.0x, 5.0x, 10.0x).
+     * Searches all target window roots for the EXACT requested speed option node (e.g. 1.25x, 2.0x, 5.0x, 10.0x).
      */
-    fun findExactSpeedOptionNode(roots: List<AccessibilityNodeInfo>, targetSpeed: Float): AccessibilityNodeInfo? {
+    fun findExactSpeedOptionNode(
+        roots: List<AccessibilityNodeInfo>,
+        targetSpeed: Float,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): AccessibilityNodeInfo? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         for (root in roots) {
-            queue.add(root)
+            if (isNodeFromTargetPackage(root, targetPackage, ourPackageName)) {
+                queue.add(root)
+            }
         }
 
         var visited = 0
         while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
             val curr = queue.poll() ?: break
             visited++
+
+            if (!isNodeFromTargetPackage(curr, targetPackage, ourPackageName)) {
+                continue
+            }
 
             val text = curr.text?.toString()
             val desc = curr.contentDescription?.toString()
@@ -428,7 +484,7 @@ class AccessibilityNodeOptimizer(
                 var p = curr.parent
                 var depth = 0
                 while (p != null && depth < 4) {
-                    if (p.isClickable) return p
+                    if (isNodeFromTargetPackage(p, targetPackage, ourPackageName) && p.isClickable) return p
                     p = p.parent
                     depth++
                 }
@@ -436,7 +492,11 @@ class AccessibilityNodeOptimizer(
             }
 
             for (i in 0 until curr.childCount) {
-                curr.getChild(i)?.let { queue.add(it) }
+                curr.getChild(i)?.let {
+                    if (isNodeFromTargetPackage(it, targetPackage, ourPackageName)) {
+                        queue.add(it)
+                    }
+                }
             }
         }
 
@@ -444,22 +504,27 @@ class AccessibilityNodeOptimizer(
     }
 
     /**
-     * Finds the speed trigger button in the video controls across all window roots.
+     * Finds the speed trigger button in the video controls across target window roots.
      */
     fun findSpeedTriggerNode(
         roots: List<AccessibilityNodeInfo>,
-        customIds: List<String> = emptyList()
+        customIds: List<String> = emptyList(),
+        targetPackage: String? = null,
+        ourPackageName: String? = null
     ): AccessibilityNodeInfo? {
         val targetIds = customIds + commonSpeedIds
 
         // 1. Direct Resource ID lookup across roots
         for (root in roots) {
+            if (!isNodeFromTargetPackage(root, targetPackage, ourPackageName)) continue
             for (resId in targetIds) {
                 try {
                     val matches = root.findAccessibilityNodeInfosByViewId(resId)
                     if (!matches.isNullOrEmpty()) {
                         for (m in matches) {
-                            if (m.isClickable || m.parent?.isClickable == true) return m
+                            if (isNodeFromTargetPackage(m, targetPackage, ourPackageName)) {
+                                if (m.isClickable || m.parent?.isClickable == true) return m
+                            }
                         }
                     }
                 } catch (_: Exception) {}
@@ -469,13 +534,17 @@ class AccessibilityNodeOptimizer(
         // 2. Traversal by text / content description
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         for (root in roots) {
-            queue.add(root)
+            if (isNodeFromTargetPackage(root, targetPackage, ourPackageName)) {
+                queue.add(root)
+            }
         }
 
         var visited = 0
         while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
             val curr = queue.poll() ?: break
             visited++
+
+            if (!isNodeFromTargetPackage(curr, targetPackage, ourPackageName)) continue
 
             val id = curr.viewIdResourceName?.lowercase().orEmpty()
             val desc = curr.contentDescription?.toString()?.lowercase().orEmpty()
@@ -492,7 +561,11 @@ class AccessibilityNodeOptimizer(
             }
 
             for (i in 0 until curr.childCount) {
-                curr.getChild(i)?.let { queue.add(it) }
+                curr.getChild(i)?.let {
+                    if (isNodeFromTargetPackage(it, targetPackage, ourPackageName)) {
+                        queue.add(it)
+                    }
+                }
             }
         }
 
@@ -500,16 +573,23 @@ class AccessibilityNodeOptimizer(
     }
 
     /**
-     * Finds the Settings / Gear / Overflow menu button on the video player.
+     * Finds the Settings / Gear / Overflow menu button on the video player in target roots.
      */
-    fun findSettingsGearNode(roots: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
+    fun findSettingsGearNode(
+        roots: List<AccessibilityNodeInfo>,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): AccessibilityNodeInfo? {
         for (root in roots) {
+            if (!isNodeFromTargetPackage(root, targetPackage, ourPackageName)) continue
             for (resId in commonSettingsGearIds) {
                 try {
                     val matches = root.findAccessibilityNodeInfosByViewId(resId)
                     if (!matches.isNullOrEmpty()) {
                         for (m in matches) {
-                            if (m.isClickable || m.parent?.isClickable == true) return m
+                            if (isNodeFromTargetPackage(m, targetPackage, ourPackageName)) {
+                                if (m.isClickable || m.parent?.isClickable == true) return m
+                            }
                         }
                     }
                 } catch (_: Exception) {}
@@ -518,13 +598,17 @@ class AccessibilityNodeOptimizer(
 
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         for (root in roots) {
-            queue.add(root)
+            if (isNodeFromTargetPackage(root, targetPackage, ourPackageName)) {
+                queue.add(root)
+            }
         }
 
         var visited = 0
         while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
             val curr = queue.poll() ?: break
             visited++
+
+            if (!isNodeFromTargetPackage(curr, targetPackage, ourPackageName)) continue
 
             val id = curr.viewIdResourceName?.lowercase().orEmpty()
             val desc = curr.contentDescription?.toString()?.lowercase().orEmpty()
@@ -538,7 +622,11 @@ class AccessibilityNodeOptimizer(
             }
 
             for (i in 0 until curr.childCount) {
-                curr.getChild(i)?.let { queue.add(it) }
+                curr.getChild(i)?.let {
+                    if (isNodeFromTargetPackage(it, targetPackage, ourPackageName)) {
+                        queue.add(it)
+                    }
+                }
             }
         }
 
@@ -546,18 +634,26 @@ class AccessibilityNodeOptimizer(
     }
 
     /**
-     * Finds "Playback speed" item inside a settings menu popup / bottom sheet.
+     * Finds "Playback speed" item inside a settings menu popup / bottom sheet in target roots.
      */
-    fun findPlaybackSpeedMenuItem(roots: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
+    fun findPlaybackSpeedMenuItem(
+        roots: List<AccessibilityNodeInfo>,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): AccessibilityNodeInfo? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         for (root in roots) {
-            queue.add(root)
+            if (isNodeFromTargetPackage(root, targetPackage, ourPackageName)) {
+                queue.add(root)
+            }
         }
 
         var visited = 0
         while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
             val curr = queue.poll() ?: break
             visited++
+
+            if (!isNodeFromTargetPackage(curr, targetPackage, ourPackageName)) continue
 
             val text = curr.text?.toString()?.lowercase().orEmpty()
             val desc = curr.contentDescription?.toString()?.lowercase().orEmpty()
@@ -573,7 +669,11 @@ class AccessibilityNodeOptimizer(
             }
 
             for (i in 0 until curr.childCount) {
-                curr.getChild(i)?.let { queue.add(it) }
+                curr.getChild(i)?.let {
+                    if (isNodeFromTargetPackage(it, targetPackage, ourPackageName)) {
+                        queue.add(it)
+                    }
+                }
             }
         }
 
@@ -586,12 +686,15 @@ class AccessibilityNodeOptimizer(
      */
     fun findCustomPlayerCandidateTriggers(
         roots: List<AccessibilityNodeInfo>,
-        playerBounds: Rect
+        playerBounds: Rect,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
     ): List<AccessibilityNodeInfo> {
         val candidates = mutableListOf<AccessibilityNodeInfo>()
         val rect = Rect()
 
         for (root in roots) {
+            if (!isNodeFromTargetPackage(root, targetPackage, ourPackageName)) continue
             val queue = ArrayDeque<AccessibilityNodeInfo>()
             queue.add(root)
             var count = 0
@@ -599,6 +702,8 @@ class AccessibilityNodeOptimizer(
             while (queue.isNotEmpty() && count < config.maxNodesLimit) {
                 val curr = queue.poll() ?: break
                 count++
+
+                if (!isNodeFromTargetPackage(curr, targetPackage, ourPackageName)) continue
 
                 curr.getBoundsInScreen(rect)
                 val id = curr.viewIdResourceName?.lowercase(Locale.US).orEmpty()
@@ -632,7 +737,11 @@ class AccessibilityNodeOptimizer(
                 }
 
                 for (i in 0 until curr.childCount) {
-                    curr.getChild(i)?.let { queue.add(it) }
+                    curr.getChild(i)?.let {
+                        if (isNodeFromTargetPackage(it, targetPackage, ourPackageName)) {
+                            queue.add(it)
+                        }
+                    }
                 }
             }
         }
@@ -642,16 +751,24 @@ class AccessibilityNodeOptimizer(
     /**
      * Detects currently active/selected playback speed from active UI nodes (speed button text, radio button, etc.)
      */
-    fun detectCurrentSelectedSpeed(roots: List<AccessibilityNodeInfo>): Float? {
+    fun detectCurrentSelectedSpeed(
+        roots: List<AccessibilityNodeInfo>,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): Float? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         for (root in roots) {
-            queue.add(root)
+            if (isNodeFromTargetPackage(root, targetPackage, ourPackageName)) {
+                queue.add(root)
+            }
         }
 
         var visited = 0
         while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
             val curr = queue.poll() ?: break
             visited++
+
+            if (!isNodeFromTargetPackage(curr, targetPackage, ourPackageName)) continue
 
             val id = curr.viewIdResourceName?.lowercase().orEmpty()
             val text = curr.text?.toString().orEmpty()
@@ -670,7 +787,11 @@ class AccessibilityNodeOptimizer(
             }
 
             for (i in 0 until curr.childCount) {
-                curr.getChild(i)?.let { queue.add(it) }
+                curr.getChild(i)?.let {
+                    if (isNodeFromTargetPackage(it, targetPackage, ourPackageName)) {
+                        queue.add(it)
+                    }
+                }
             }
         }
 
@@ -683,9 +804,11 @@ class AccessibilityNodeOptimizer(
      */
     fun detectVideoPlaybackStatus(
         roots: List<AccessibilityNodeInfo>,
-        audioManager: AudioManager?
+        audioManager: AudioManager?,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
     ): PlaybackStatusResult {
-        val targets = inspectVideoPlayerTargets(roots)
+        val targets = inspectVideoPlayerTargets(roots, targetPackage, ourPackageName)
 
         val currentTimecode = targets.timecodeNode?.text?.toString()
         val detectedSpeed: String? = targets.speedOptionsAvailable.firstOrNull()?.first
@@ -747,7 +870,11 @@ class AccessibilityNodeOptimizer(
         roots: List<AccessibilityNodeInfo>,
         actionType: MediaActionType,
         customIds: List<String> = emptyList(),
-        speedTargetText: String? = null
+        speedTargetText: String? = null,
+        targetPackage: String? = null,
+        ourPackageName: String? = null,
+        rootsTotal: Int = roots.size,
+        excludedRoots: Int = 0
     ): TraversalDiagnostics {
         val startTime = SystemClock.uptimeMillis()
         if (roots.isEmpty()) {
@@ -757,7 +884,11 @@ class AccessibilityNodeOptimizer(
                 totalNodesVisited = 0,
                 maxDepthReached = 0,
                 matchedAction = actionType,
-                success = false
+                success = false,
+                targetPackage = targetPackage,
+                rootsTotal = rootsTotal,
+                targetRootsUsed = 0,
+                excludedRoots = excludedRoots
             )
         }
 
@@ -765,14 +896,19 @@ class AccessibilityNodeOptimizer(
         var maxDepth = 0
 
         for (root in roots) {
-            val diag = performMediaAction(root, actionType, customIds, speedTargetText)
+            if (!isNodeFromTargetPackage(root, targetPackage, ourPackageName)) continue
+            val diag = performMediaAction(root, actionType, customIds, speedTargetText, targetPackage, ourPackageName)
             totalVisited += diag.totalNodesVisited
             if (diag.maxDepthReached > maxDepth) maxDepth = diag.maxDepthReached
             if (diag.success) {
                 return diag.copy(
                     totalNodesVisited = totalVisited,
                     maxDepthReached = maxDepth,
-                    scanDurationMs = SystemClock.uptimeMillis() - startTime
+                    scanDurationMs = SystemClock.uptimeMillis() - startTime,
+                    targetPackage = targetPackage,
+                    rootsTotal = rootsTotal,
+                    targetRootsUsed = roots.size,
+                    excludedRoots = excludedRoots
                 )
             }
         }
@@ -783,8 +919,12 @@ class AccessibilityNodeOptimizer(
             totalNodesVisited = totalVisited,
             maxDepthReached = maxDepth,
             matchedAction = actionType,
-            matchedByHeuristic = "No direct root match",
-            success = false
+            matchedByHeuristic = "No target app root matched",
+            success = false,
+            targetPackage = targetPackage,
+            rootsTotal = rootsTotal,
+            targetRootsUsed = roots.size,
+            excludedRoots = excludedRoots
         )
     }
 
@@ -795,17 +935,20 @@ class AccessibilityNodeOptimizer(
         rootNode: AccessibilityNodeInfo?,
         actionType: MediaActionType,
         customIds: List<String> = emptyList(),
-        speedTargetText: String? = null
+        speedTargetText: String? = null,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
     ): TraversalDiagnostics {
         val startTime = SystemClock.uptimeMillis()
-        if (rootNode == null) {
+        if (rootNode == null || !isNodeFromTargetPackage(rootNode, targetPackage, ourPackageName)) {
             return TraversalDiagnostics(
                 lastScanTimeMs = System.currentTimeMillis(),
                 scanDurationMs = 0,
                 totalNodesVisited = 0,
                 maxDepthReached = 0,
                 matchedAction = actionType,
-                success = false
+                success = false,
+                targetPackage = targetPackage
             )
         }
 
@@ -819,7 +962,8 @@ class AccessibilityNodeOptimizer(
                 maxDepthReached = 0,
                 matchedAction = actionType,
                 matchedByHeuristic = "Throttled",
-                success = false
+                success = false,
+                targetPackage = targetPackage
             )
         }
         lastActionTimestamp = now
@@ -827,7 +971,7 @@ class AccessibilityNodeOptimizer(
         // STEP 1: Speed Selection
         if (actionType == MediaActionType.SPEED_10X || actionType == MediaActionType.SPEED_SET || actionType == MediaActionType.SPEED_TOGGLE) {
             val speedLabel = speedTargetText ?: if (actionType == MediaActionType.SPEED_10X) "10.0x" else "1.0x"
-            val speedResult = attemptSpeedSelection(rootNode, speedLabel)
+            val speedResult = attemptSpeedSelection(rootNode, speedLabel, targetPackage, ourPackageName)
             if (speedResult.clicked && !speedResult.isMenuTriggerOnly) {
                 val duration = SystemClock.uptimeMillis() - startTime
                 return TraversalDiagnostics(
@@ -838,7 +982,10 @@ class AccessibilityNodeOptimizer(
                     matchedAction = actionType,
                     matchedViewId = speedResult.matchedViewId,
                     matchedByHeuristic = speedResult.matchedHeuristic ?: "Direct Speed Selection ($speedLabel)",
-                    success = true
+                    success = true,
+                    targetPackage = targetPackage,
+                    matchedPackage = speedResult.node?.packageName?.toString(),
+                    matchedDescription = speedResult.node?.contentDescription?.toString() ?: speedResult.node?.text?.toString()
                 )
             }
         }
@@ -858,7 +1005,7 @@ class AccessibilityNodeOptimizer(
                 val matches = rootNode.findAccessibilityNodeInfosByViewId(resId)
                 if (!matches.isNullOrEmpty()) {
                     for (node in matches) {
-                        if (executeClick(node)) {
+                        if (isNodeFromTargetPackage(node, targetPackage, ourPackageName) && executeClick(node, targetPackage, ourPackageName)) {
                             val duration = SystemClock.uptimeMillis() - startTime
                             return TraversalDiagnostics(
                                 lastScanTimeMs = System.currentTimeMillis(),
@@ -868,7 +1015,10 @@ class AccessibilityNodeOptimizer(
                                 matchedAction = actionType,
                                 matchedViewId = resId,
                                 matchedByHeuristic = "Direct Resource ID Match ($resId)",
-                                success = true
+                                success = true,
+                                targetPackage = targetPackage,
+                                matchedPackage = node.packageName?.toString(),
+                                matchedDescription = node.contentDescription?.toString() ?: node.text?.toString()
                             )
                         }
                     }
@@ -880,15 +1030,16 @@ class AccessibilityNodeOptimizer(
 
         // STEP 3: Traverse Hierarchy based on Strategy (BFS or DFS)
         val traversalResult = when (config.strategy) {
-            TraversalStrategy.BFS -> traverseBfs(rootNode, actionType)
-            TraversalStrategy.DFS -> traverseDfs(rootNode, actionType)
-            TraversalStrategy.ID_FIRST_DIRECT -> traverseBfs(rootNode, actionType)
+            TraversalStrategy.BFS -> traverseBfs(rootNode, actionType, targetPackage, ourPackageName)
+            TraversalStrategy.DFS -> traverseDfs(rootNode, actionType, targetPackage, ourPackageName)
+            TraversalStrategy.ID_FIRST_DIRECT -> traverseBfs(rootNode, actionType, targetPackage, ourPackageName)
         }
 
         val duration = SystemClock.uptimeMillis() - startTime
         return traversalResult.copy(
             lastScanTimeMs = System.currentTimeMillis(),
-            scanDurationMs = duration
+            scanDurationMs = duration,
+            targetPackage = targetPackage
         )
     }
 
@@ -897,14 +1048,19 @@ class AccessibilityNodeOptimizer(
      * Searches for exact speed option node and clicks it.
      * Note: Does NOT return clicked=true when only a menu trigger was clicked.
      */
-    fun attemptSpeedSelection(root: AccessibilityNodeInfo, targetSpeed: String): NodeActionResult {
+    fun attemptSpeedSelection(
+        root: AccessibilityNodeInfo,
+        targetSpeed: String,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): NodeActionResult {
         val targetSpeedFloat = normalizeSpeedLabel(targetSpeed) ?: 1.0f
-        val exactOption = findExactSpeedOptionNode(listOf(root), targetSpeedFloat)
+        val exactOption = findExactSpeedOptionNode(listOf(root), targetSpeedFloat, targetPackage, ourPackageName)
 
         if (exactOption != null) {
             val rect = Rect()
             exactOption.getBoundsInScreen(rect)
-            val clicked = executeClick(exactOption)
+            val clicked = executeClick(exactOption, targetPackage, ourPackageName)
             if (clicked) {
                 return NodeActionResult(
                     node = exactOption,
@@ -918,7 +1074,7 @@ class AccessibilityNodeOptimizer(
         }
 
         // If direct speed option was not visible, check for speed trigger button
-        val speedSettingsNode = findSpeedTriggerNode(listOf(root))
+        val speedSettingsNode = findSpeedTriggerNode(listOf(root), targetPackage = targetPackage, ourPackageName = ourPackageName)
         if (speedSettingsNode != null) {
             val rect = Rect()
             speedSettingsNode.getBoundsInScreen(rect)
@@ -935,26 +1091,38 @@ class AccessibilityNodeOptimizer(
         return NodeActionResult()
     }
 
-    private fun traverseBfs(root: AccessibilityNodeInfo, targetAction: MediaActionType): TraversalDiagnostics {
+    private fun traverseBfs(
+        root: AccessibilityNodeInfo,
+        targetAction: MediaActionType,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): TraversalDiagnostics {
         var visited = 0
         var maxDepth = 0
         val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
-        queue.add(Pair(root, 0))
+        if (isNodeFromTargetPackage(root, targetPackage, ourPackageName)) {
+            queue.add(Pair(root, 0))
+        }
 
         while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
             val (current, depth) = queue.poll() ?: break
             visited++
             if (depth > maxDepth) maxDepth = depth
 
+            if (!isNodeFromTargetPackage(current, targetPackage, ourPackageName)) continue
+
             if (matchesActionHeuristic(current, targetAction)) {
-                if (executeClick(current)) {
+                if (executeClick(current, targetPackage, ourPackageName)) {
                     return TraversalDiagnostics(
                         totalNodesVisited = visited,
                         maxDepthReached = maxDepth,
                         matchedAction = targetAction,
                         matchedViewId = current.viewIdResourceName,
                         matchedByHeuristic = "BFS Heuristic Match (${current.className})",
-                        success = true
+                        success = true,
+                        targetPackage = targetPackage,
+                        matchedPackage = current.packageName?.toString(),
+                        matchedDescription = current.contentDescription?.toString() ?: current.text?.toString()
                     )
                 }
             }
@@ -963,7 +1131,7 @@ class AccessibilityNodeOptimizer(
                 val childCount = current.childCount
                 for (i in 0 until childCount) {
                     val child = current.getChild(i)
-                    if (child != null) {
+                    if (child != null && isNodeFromTargetPackage(child, targetPackage, ourPackageName)) {
                         queue.add(Pair(child, depth + 1))
                     }
                 }
@@ -975,26 +1143,38 @@ class AccessibilityNodeOptimizer(
             maxDepthReached = maxDepth,
             matchedAction = targetAction,
             matchedByHeuristic = "None matched",
-            success = false
+            success = false,
+            targetPackage = targetPackage
         )
     }
 
-    private fun traverseDfs(root: AccessibilityNodeInfo, targetAction: MediaActionType): TraversalDiagnostics {
+    private fun traverseDfs(
+        root: AccessibilityNodeInfo,
+        targetAction: MediaActionType,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): TraversalDiagnostics {
         var visited = 0
         var maxDepth = 0
+        var matchedNode: AccessibilityNodeInfo? = null
 
         fun dfsInternal(node: AccessibilityNodeInfo, depth: Int): Boolean {
             visited++
             if (depth > maxDepth) maxDepth = depth
             if (visited >= config.maxNodesLimit || depth > config.maxDepth) return false
 
+            if (!isNodeFromTargetPackage(node, targetPackage, ourPackageName)) return false
+
             if (matchesActionHeuristic(node, targetAction)) {
-                if (executeClick(node)) return true
+                if (executeClick(node, targetPackage, ourPackageName)) {
+                    matchedNode = node
+                    return true
+                }
             }
 
             for (i in 0 until node.childCount) {
                 val child = node.getChild(i)
-                if (child != null) {
+                if (child != null && isNodeFromTargetPackage(child, targetPackage, ourPackageName)) {
                     val found = dfsInternal(child, depth + 1)
                     if (found) return true
                 }
@@ -1002,13 +1182,16 @@ class AccessibilityNodeOptimizer(
             return false
         }
 
-        val success = dfsInternal(root, 0)
+        val success = if (isNodeFromTargetPackage(root, targetPackage, ourPackageName)) dfsInternal(root, 0) else false
         return TraversalDiagnostics(
             totalNodesVisited = visited,
             maxDepthReached = maxDepth,
             matchedAction = targetAction,
             matchedByHeuristic = if (success) "DFS Heuristic Match" else "None",
-            success = success
+            success = success,
+            targetPackage = targetPackage,
+            matchedPackage = matchedNode?.packageName?.toString(),
+            matchedDescription = matchedNode?.contentDescription?.toString() ?: matchedNode?.text?.toString()
         )
     }
 
@@ -1065,8 +1248,17 @@ class AccessibilityNodeOptimizer(
 
     /**
      * Attempts to click the node directly or find the nearest clickable parent or child.
+     * Enforces target package validation to guarantee overlay and system UI are NEVER clicked.
      */
-    fun executeClick(node: AccessibilityNodeInfo): Boolean {
+    fun executeClick(
+        node: AccessibilityNodeInfo,
+        targetPackage: String? = null,
+        ourPackageName: String? = null
+    ): Boolean {
+        if (!isNodeFromTargetPackage(node, targetPackage, ourPackageName)) {
+            return false
+        }
+
         if (node.isClickable) {
             val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (clicked) return true
@@ -1077,7 +1269,7 @@ class AccessibilityNodeOptimizer(
             var parent = node.parent
             var depthCheck = 0
             while (parent != null && depthCheck < 5) {
-                if (parent.isClickable) {
+                if (isNodeFromTargetPackage(parent, targetPackage, ourPackageName) && parent.isClickable) {
                     val clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     if (clicked) return true
                 }
@@ -1089,7 +1281,7 @@ class AccessibilityNodeOptimizer(
         // Check immediate children
         for (i in 0 until node.childCount) {
             val child = node.getChild(i)
-            if (child != null && child.isClickable) {
+            if (child != null && isNodeFromTargetPackage(child, targetPackage, ourPackageName) && child.isClickable) {
                 val clicked = child.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 if (clicked) return true
             }
