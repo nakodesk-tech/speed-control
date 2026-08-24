@@ -1,0 +1,6 @@
+{
+  "name": "EduCompanion",
+  "description": "Companion assistant for educational apps with floating overlay, accessibility node traversal, and media control automation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

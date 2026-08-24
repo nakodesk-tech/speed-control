@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">EduCompanion</string>
+    <string name="accessibility_service_label">EduCompanion Accessibility Helper</string>
+    <string name="accessibility_service_description">Detects educational apps (such as DIKSHA) and facilitates automated media playback controls, video navigation, and study notes.</string>
+</resources>
