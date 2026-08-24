@@ -62,6 +62,47 @@ data class TargetAppConfig(
                 iconName = "diksha_lms",
                 isEnabled = true,
                 autoLaunchOverlay = true,
+                customPlayPauseIds = listOf(
+                    "com.diksha.lms:id/exo_play",
+                    "com.diksha.lms:id/exo_pause",
+                    "com.diksha.lms:id/play_pause_button",
+                    "com.diksha.lms:id/v_play",
+                    "com.diksha.lms:id/btn_play",
+                    "in.gov.diksha.app:id/exo_play",
+                    "in.gov.diksha.app:id/exo_pause",
+                    "exo_play",
+                    "exo_pause",
+                    "play_pause_button"
+                ),
+                customForwardIds = listOf(
+                    "com.diksha.lms:id/exo_ffwd",
+                    "in.gov.diksha.app:id/exo_ffwd",
+                    "exo_ffwd",
+                    "forward_10"
+                ),
+                customRewindIds = listOf(
+                    "com.diksha.lms:id/exo_rew",
+                    "in.gov.diksha.app:id/exo_rew",
+                    "exo_rew",
+                    "rewind_10"
+                ),
+                customNextIds = listOf(
+                    "com.diksha.lms:id/btn_next",
+                    "in.gov.diksha.app:id/btn_next",
+                    "next_video"
+                ),
+                customSpeedIds = listOf(
+                    "com.diksha.lms:id/btn_playback_speed",
+                    "com.diksha.lms:id/playback_speed",
+                    "com.diksha.lms:id/speed_button",
+                    "com.diksha.lms:id/exo_playback_speed",
+                    "in.gov.diksha.app:id/btn_playback_speed",
+                    "btn_playback_speed",
+                    "exo_playback_speed",
+                    "speed_button",
+                    "playback_speed",
+                    "playback_rate"
+                ),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -72,6 +113,40 @@ data class TargetAppConfig(
                 iconName = "igot",
                 isEnabled = true,
                 autoLaunchOverlay = true,
+                customPlayPauseIds = listOf(
+                    "com.igot.karmyogibharat:id/exo_play",
+                    "com.igot.karmyogibharat:id/exo_pause",
+                    "com.igot.karmyogibharat:id/play_pause_button",
+                    "exo_play",
+                    "exo_pause",
+                    "play_pause"
+                ),
+                customForwardIds = listOf(
+                    "com.igot.karmyogibharat:id/exo_ffwd",
+                    "com.igot.karmyogibharat:id/forward_10",
+                    "exo_ffwd",
+                    "forward_10"
+                ),
+                customRewindIds = listOf(
+                    "com.igot.karmyogibharat:id/exo_rew",
+                    "com.igot.karmyogibharat:id/replay_10",
+                    "exo_rew",
+                    "rewind_10"
+                ),
+                customNextIds = listOf(
+                    "com.igot.karmyogibharat:id/btn_next",
+                    "com.igot.karmyogibharat:id/next_video"
+                ),
+                customSpeedIds = listOf(
+                    "com.igot.karmyogibharat:id/btn_playback_speed",
+                    "com.igot.karmyogibharat:id/playback_speed",
+                    "com.igot.karmyogibharat:id/speed_button",
+                    "com.igot.karmyogibharat:id/exo_playback_speed",
+                    "btn_playback_speed",
+                    "exo_playback_speed",
+                    "playback_speed",
+                    "speed_button"
+                ),
                 isBuiltIn = true
             ),
             TargetAppConfig(

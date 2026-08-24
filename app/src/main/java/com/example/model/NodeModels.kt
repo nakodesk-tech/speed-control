@@ -1,5 +1,30 @@
 package com.example.model
 
+enum class DetectedPlayerType(val displayName: String) {
+    NATIVE_EXOPLAYER("Native Media3/ExoPlayer"),
+    WEBVIEW_HTML5("WebView / HTML5 Player"),
+    CUSTOM_UNKNOWN("Custom / Unknown Player")
+}
+
+data class SpeedActionDiagnostics(
+    val packageName: String = "",
+    val requestedSpeed: String = "1.0x",
+    val requestedSpeedFloat: Float = 1.0f,
+    val detectedPlayerType: DetectedPlayerType = DetectedPlayerType.CUSTOM_UNKNOWN,
+    val speedTriggerFound: Boolean = false,
+    val speedTriggerClicked: Boolean = false,
+    val speedTriggerViewId: String? = null,
+    val menuDetected: Boolean = false,
+    val speedOptionFound: Boolean = false,
+    val speedOptionText: String? = null,
+    val speedOptionResourceId: String? = null,
+    val clickResult: Boolean = false,
+    val verificationResult: Boolean = false,
+    val finalDetectedSpeed: String? = null,
+    val finalResult: String = "FAILURE",
+    val structuredLog: String = ""
+)
+
 enum class MediaActionType(val displayName: String) {
     PLAY_PAUSE("Play / Pause"),
     PLAY("Play"),
@@ -111,7 +136,9 @@ data class TraversalDiagnostics(
     val matchedViewId: String? = null,
     val matchedByHeuristic: String? = null,
     val success: Boolean = false,
-    val currentForegroundPackage: String = ""
+    val currentForegroundPackage: String = "",
+    val detectedPlayerType: DetectedPlayerType = DetectedPlayerType.CUSTOM_UNKNOWN,
+    val speedDiagnostics: SpeedActionDiagnostics? = null
 )
 
 data class SimulatedNode(

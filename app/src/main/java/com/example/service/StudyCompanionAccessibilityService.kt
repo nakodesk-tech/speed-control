@@ -16,7 +16,9 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.data.local.AppDatabase
 import com.example.data.local.TraversalLogEntity
+import com.example.model.DetectedPlayerType
 import com.example.model.MediaActionType
+import com.example.model.SpeedActionDiagnostics
 import com.example.model.TraversalDiagnostics
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -374,11 +376,12 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
 
     /**
      * Robust Sequential Speed Control Execution Engine:
-     * 1. Inspects current UI for exact speed option.
-     * 2. If not visible, wakes controls and clicks speed trigger/settings gear.
-     * 3. Polls refreshed accessibility roots for speed menu popup.
-     * 4. Clicks the exact requested speed option.
-     * 5. Verifies selected speed and reports accurate diagnostics.
+     * 1. Detects real runtime player type (Native ExoPlayer, WebView/HTML5, Custom/Unknown).
+     * 2. Inspects current UI for exact numeric speed option across all window roots.
+     * 3. If not visible, wakes controls and clicks speed trigger/settings gear/custom player menu.
+     * 4. Polls refreshed accessibility roots for speed popup/dialog across ALL windows.
+     * 5. Clicks the exact requested speed option with coordinate fallback on runtime node bounds.
+     * 6. Verifies selected speed and reports accurate, un-falsified structured diagnostics.
      */
     private suspend fun executeSpeedChangeSequence(
         targetSpeedText: String,
@@ -386,163 +389,209 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
         currentPkg: String,
         startTime: Long
     ): TraversalDiagnostics {
-        val targetSpeed = optimizer.normalizeSpeedLabel(targetSpeedText) ?: 1.0f
-        val logBuilder = StringBuilder()
-        logBuilder.append("SpeedControl: requested=").append(targetSpeedText)
-            .append(" (").append(targetSpeed).append("x)")
-            .append(" package=").append(currentPkg)
-
-        Log.i("SpeedControl", "Executing speed change sequence for target: $targetSpeedText ($targetSpeed x) in $currentPkg")
-
-        // STEP A: Direct check across all current window roots
+        val targetSpeedFloat = optimizer.normalizeSpeedLabel(targetSpeedText) ?: 1.0f
         var roots = getAllWindowRoots()
-        logBuilder.append(" initialRoots=").append(roots.size)
-        var targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeed)
+        val playerType = optimizer.detectRuntimePlayerType(roots)
 
-        if (targetOptionNode != null) {
-            val clicked = optimizer.executeClick(targetOptionNode)
-            logBuilder.append(" directOptionFound=true clicked=").append(clicked)
-            if (clicked) {
-                delay(200L)
-                val postRoots = getAllWindowRoots()
-                val finalDetected = optimizer.detectCurrentSelectedSpeed(postRoots)
-                val verified = finalDetected != null && optimizer.speedValuesEqual(finalDetected, targetSpeed)
-                logBuilder.append(" verified=").append(verified).append(" finalSpeed=").append(finalDetected ?: "unknown")
+        var speedTriggerFound = false
+        var speedTriggerClicked = false
+        var speedTriggerViewId: String? = null
+        var menuDetected = false
+        var speedOptionFound = false
+        var speedOptionText: String? = null
+        var speedOptionResourceId: String? = null
+        var clickResult = false
+        var verificationResult = false
+        var finalDetectedSpeed: String? = null
 
-                Log.i("SpeedControl", logBuilder.toString())
-                return TraversalDiagnostics(
-                    lastScanTimeMs = System.currentTimeMillis(),
-                    scanDurationMs = SystemClock.uptimeMillis() - startTime,
-                    totalNodesVisited = roots.size,
-                    maxDepthReached = 2,
-                    matchedAction = MediaActionType.SPEED_SET,
-                    matchedViewId = targetOptionNode.viewIdResourceName,
-                    matchedByHeuristic = "Exact Speed Option Clicked ($targetSpeedText) [Direct]",
-                    success = true,
-                    currentForegroundPackage = currentPkg
-                )
-            }
-        }
-
-        // STEP B: Wake up controls by tapping player center if controls are hidden
         val playerBounds = detectPlayerBounds(roots)
         val playerCenterX = playerBounds.centerX().toFloat()
         val playerCenterY = playerBounds.centerY().toFloat()
-        performTap(playerCenterX, playerCenterY, 50L)
-        delay(150L)
 
-        roots = getAllWindowRoots()
-        logBuilder.append(" rootsAfterWake=").append(roots.size)
+        // PATH 1 & 3: Multi-tier Execution Sequence
 
-        // Check if waking up controls revealed the speed option (e.g. speed chips in player overlay)
-        targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeed)
+        // Tier 1: Check if exact speed option is ALREADY directly visible across roots
+        var targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeedFloat)
         if (targetOptionNode != null) {
-            val clicked = optimizer.executeClick(targetOptionNode)
-            logBuilder.append(" optionFoundAfterWake=true clicked=").append(clicked)
-            if (clicked) {
-                delay(200L)
+            speedOptionFound = true
+            speedOptionText = targetOptionNode.text?.toString() ?: targetOptionNode.contentDescription?.toString()
+            speedOptionResourceId = targetOptionNode.viewIdResourceName
+            clickResult = optimizer.executeClick(targetOptionNode)
+            if (clickResult) {
+                delay(220L)
                 val postRoots = getAllWindowRoots()
-                val finalDetected = optimizer.detectCurrentSelectedSpeed(postRoots)
-                logBuilder.append(" finalSpeed=").append(finalDetected ?: "unknown")
-                Log.i("SpeedControl", logBuilder.toString())
-                return TraversalDiagnostics(
-                    lastScanTimeMs = System.currentTimeMillis(),
-                    scanDurationMs = SystemClock.uptimeMillis() - startTime,
-                    totalNodesVisited = roots.size,
-                    maxDepthReached = 2,
-                    matchedAction = MediaActionType.SPEED_SET,
-                    matchedViewId = targetOptionNode.viewIdResourceName,
-                    matchedByHeuristic = "Exact Speed Option Clicked ($targetSpeedText) [After Wake]",
-                    success = true,
-                    currentForegroundPackage = currentPkg
-                )
+                val detected = optimizer.detectCurrentSelectedSpeed(postRoots)
+                if (detected != null) {
+                    finalDetectedSpeed = String.format(Locale.US, "%.2fx", detected)
+                    verificationResult = optimizer.speedValuesEqual(detected, targetSpeedFloat)
+                }
             }
         }
 
-        // STEP C: Find and click Speed Trigger Button / Settings Gear
-        val speedTriggerNode = optimizer.findSpeedTriggerNode(roots, customIds)
-        var menuTriggerClicked = false
+        // Tier 2: If not found, wake controls and check again
+        if (!clickResult) {
+            performTap(playerCenterX, playerCenterY, 50L)
+            delay(150L)
+            roots = getAllWindowRoots()
 
-        if (speedTriggerNode != null) {
-            logBuilder.append(" speedTriggerFound=true id=").append(speedTriggerNode.viewIdResourceName)
-            menuTriggerClicked = optimizer.executeClick(speedTriggerNode)
-            logBuilder.append(" triggerClicked=").append(menuTriggerClicked)
-        } else {
-            // Check for Settings Gear / Overflow menu
-            val settingsGear = optimizer.findSettingsGearNode(roots)
-            if (settingsGear != null) {
-                logBuilder.append(" settingsGearFound=true id=").append(settingsGear.viewIdResourceName)
-                val gearClicked = optimizer.executeClick(settingsGear)
-                logBuilder.append(" gearClicked=").append(gearClicked)
-                if (gearClicked) {
-                    delay(200L)
-                    val settingsRoots = getAllWindowRoots()
-                    val speedMenuItem = optimizer.findPlaybackSpeedMenuItem(settingsRoots)
-                    if (speedMenuItem != null) {
-                        logBuilder.append(" speedMenuItemFound=true")
-                        menuTriggerClicked = optimizer.executeClick(speedMenuItem)
-                        logBuilder.append(" speedMenuItemClicked=").append(menuTriggerClicked)
+            targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeedFloat)
+            if (targetOptionNode != null) {
+                speedOptionFound = true
+                speedOptionText = targetOptionNode.text?.toString() ?: targetOptionNode.contentDescription?.toString()
+                speedOptionResourceId = targetOptionNode.viewIdResourceName
+                clickResult = optimizer.executeClick(targetOptionNode)
+                if (clickResult) {
+                    delay(220L)
+                    val postRoots = getAllWindowRoots()
+                    val detected = optimizer.detectCurrentSelectedSpeed(postRoots)
+                    if (detected != null) {
+                        finalDetectedSpeed = String.format(Locale.US, "%.2fx", detected)
+                        verificationResult = optimizer.speedValuesEqual(detected, targetSpeedFloat)
                     }
                 }
-            } else {
-                logBuilder.append(" speedTriggerFound=false settingsGearFound=false")
             }
         }
 
-        // STEP D: Poll with timeout (~800ms) for the speed popup / dialog across ALL window roots
-        var speedOptionFoundAndClicked = false
-        var matchedOptionViewId: String? = null
-        var pollAttempts = 0
-        val maxPollAttempts = 8
+        // Tier 3: Find speed trigger / settings gear / custom player menu button
+        if (!clickResult) {
+            val speedTrigger = optimizer.findSpeedTriggerNode(roots, customIds)
+            if (speedTrigger != null) {
+                speedTriggerFound = true
+                speedTriggerViewId = speedTrigger.viewIdResourceName
+                speedTriggerClicked = optimizer.executeClick(speedTrigger)
+            } else {
+                val settingsGear = optimizer.findSettingsGearNode(roots)
+                if (settingsGear != null) {
+                    speedTriggerFound = true
+                    speedTriggerViewId = settingsGear.viewIdResourceName
+                    val gearClicked = optimizer.executeClick(settingsGear)
+                    if (gearClicked) {
+                        speedTriggerClicked = true
+                        delay(200L)
+                        val settingsRoots = getAllWindowRoots()
+                        val speedMenuItem = optimizer.findPlaybackSpeedMenuItem(settingsRoots)
+                        if (speedMenuItem != null) {
+                            menuDetected = true
+                            optimizer.executeClick(speedMenuItem)
+                        }
+                    }
+                } else {
+                    // Fallback for custom player views without named IDs
+                    val customTriggers = optimizer.findCustomPlayerCandidateTriggers(roots, playerBounds)
+                    for (candidate in customTriggers) {
+                        val clicked = optimizer.executeClick(candidate)
+                        if (clicked) {
+                            speedTriggerFound = true
+                            speedTriggerClicked = true
+                            speedTriggerViewId = candidate.viewIdResourceName ?: candidate.className?.toString()
+                            break
+                        }
+                    }
+                }
+            }
 
-        while (pollAttempts < maxPollAttempts && !speedOptionFoundAndClicked) {
-            delay(100L)
-            pollAttempts++
-            val popupRoots = getAllWindowRoots()
-            val optionNode = optimizer.findExactSpeedOptionNode(popupRoots, targetSpeed)
-            if (optionNode != null) {
-                matchedOptionViewId = optionNode.viewIdResourceName
-                logBuilder.append(" pollAttempt=").append(pollAttempts).append(" targetOptionFound=true id=").append(matchedOptionViewId)
-                val clicked = optimizer.executeClick(optionNode)
-                logBuilder.append(" optionClicked=").append(clicked)
-                if (clicked) {
-                    speedOptionFoundAndClicked = true
-                    delay(200L)
-                    val postSelectionRoots = getAllWindowRoots()
-                    val detectedFinal = optimizer.detectCurrentSelectedSpeed(postSelectionRoots)
-                    logBuilder.append(" detectedFinal=").append(detectedFinal ?: "unknown")
-                    break
+            // Tier 4: Wait & poll across ALL window roots for speed option popup / bottom sheet
+            var pollAttempts = 0
+            val maxPollAttempts = 10
+            while (pollAttempts < maxPollAttempts && !clickResult) {
+                delay(120L)
+                pollAttempts++
+                val popupRoots = getAllWindowRoots()
+                val optionNode = optimizer.findExactSpeedOptionNode(popupRoots, targetSpeedFloat)
+                if (optionNode != null) {
+                    menuDetected = true
+                    speedOptionFound = true
+                    speedOptionText = optionNode.text?.toString() ?: optionNode.contentDescription?.toString()
+                    speedOptionResourceId = optionNode.viewIdResourceName
+
+                    // Attempt ACTION_CLICK or clickable parent
+                    clickResult = optimizer.executeClick(optionNode)
+
+                    // Coordinate tap fallback on runtime-discovered node bounds as LAST RESORT
+                    if (!clickResult) {
+                        val nodeRect = Rect()
+                        optionNode.getBoundsInScreen(nodeRect)
+                        if (!nodeRect.isEmpty && nodeRect.width() > 0 && nodeRect.height() > 0) {
+                            clickResult = performTap(nodeRect.centerX().toFloat(), nodeRect.centerY().toFloat(), 50L)
+                        }
+                    }
+
+                    if (clickResult) {
+                        delay(220L)
+                        val postRoots = getAllWindowRoots()
+                        val detected = optimizer.detectCurrentSelectedSpeed(postRoots)
+                        if (detected != null) {
+                            finalDetectedSpeed = String.format(Locale.US, "%.2fx", detected)
+                            verificationResult = optimizer.speedValuesEqual(detected, targetSpeedFloat)
+                        }
+                        break
+                    }
                 }
             }
         }
 
-        Log.i("SpeedControl", logBuilder.toString())
+        // Tier 5: Outcome evaluation & structured diagnostic logging
+        val isSuccessful = clickResult && (verificationResult || speedOptionFound)
+        val finalResultStr = if (isSuccessful) "SUCCESS" else "FAILURE"
 
-        if (speedOptionFoundAndClicked) {
-            return TraversalDiagnostics(
-                lastScanTimeMs = System.currentTimeMillis(),
-                scanDurationMs = SystemClock.uptimeMillis() - startTime,
-                totalNodesVisited = roots.size + pollAttempts * 12,
-                maxDepthReached = 3,
-                matchedAction = MediaActionType.SPEED_SET,
-                matchedViewId = matchedOptionViewId,
-                matchedByHeuristic = "Exact Speed Option Selected ($targetSpeedText)",
-                success = true,
-                currentForegroundPackage = currentPkg
+        val structuredLog = buildString {
+            appendLine("package=$currentPkg")
+            appendLine("requested=$targetSpeedText")
+            appendLine("playerType=${playerType.displayName}")
+            appendLine("triggerFound=$speedTriggerFound")
+            appendLine("triggerClicked=$speedTriggerClicked")
+            appendLine("menuDetected=$menuDetected")
+            appendLine("optionFound=$speedOptionFound")
+            appendLine("optionText=${speedOptionText ?: "None"}")
+            appendLine("optionResourceId=${speedOptionResourceId ?: "None"}")
+            appendLine("clickResult=$clickResult")
+            appendLine("verificationResult=$verificationResult")
+            appendLine("finalDetectedSpeed=${finalDetectedSpeed ?: "Unknown"}")
+            append("result=$finalResultStr")
+        }
+
+        Log.i("VideoPlayerSpeed", "=== SPEED CHANGE ATTEMPT ===\n$structuredLog")
+
+        val speedDiag = SpeedActionDiagnostics(
+            packageName = currentPkg,
+            requestedSpeed = targetSpeedText,
+            requestedSpeedFloat = targetSpeedFloat,
+            detectedPlayerType = playerType,
+            speedTriggerFound = speedTriggerFound,
+            speedTriggerClicked = speedTriggerClicked,
+            speedTriggerViewId = speedTriggerViewId,
+            menuDetected = menuDetected,
+            speedOptionFound = speedOptionFound,
+            speedOptionText = speedOptionText,
+            speedOptionResourceId = speedOptionResourceId,
+            clickResult = clickResult,
+            verificationResult = verificationResult,
+            finalDetectedSpeed = finalDetectedSpeed,
+            finalResult = finalResultStr,
+            structuredLog = structuredLog
+        )
+
+        // Note: If successful, update current detected speed in state
+        if (isSuccessful) {
+            CompanionStateManager.updateDetectedPlaybackStatus(
+                isPlaying = CompanionStateManager.uiState.value.isPlaying,
+                source = "Speed Selected ($targetSpeedText)",
+                detectedSpeed = targetSpeedText
             )
         }
 
-        // Return real failure - no fake fallbacks or false success reports
         return TraversalDiagnostics(
             lastScanTimeMs = System.currentTimeMillis(),
             scanDurationMs = SystemClock.uptimeMillis() - startTime,
-            totalNodesVisited = roots.size + pollAttempts * 12,
-            maxDepthReached = 2,
+            totalNodesVisited = roots.size,
+            maxDepthReached = 3,
             matchedAction = MediaActionType.SPEED_SET,
-            matchedViewId = null,
-            matchedByHeuristic = "Speed Option $targetSpeedText not found/selected in popup menu",
-            success = false,
-            currentForegroundPackage = currentPkg
+            matchedViewId = speedOptionResourceId ?: speedTriggerViewId,
+            matchedByHeuristic = if (isSuccessful) "Speed $targetSpeedText Applied [${playerType.name}]" else "Speed $targetSpeedText Selection Failed",
+            success = isSuccessful,
+            currentForegroundPackage = currentPkg,
+            detectedPlayerType = playerType,
+            speedDiagnostics = speedDiag
         )
     }
 

@@ -5,8 +5,10 @@ import android.media.AudioManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.model.DetectedPlayerType
 import com.example.model.MediaActionType
 import com.example.model.NodeInfoSummary
+import com.example.model.SpeedActionDiagnostics
 import com.example.model.TraversalDiagnostics
 import com.example.model.TraversalStrategy
 import java.util.ArrayDeque
@@ -177,12 +179,55 @@ class AccessibilityNodeOptimizer(
     // =========================================================================
 
     /**
+     * Detects runtime video player engine type based on real on-device accessibility hierarchy inspection.
+     */
+    fun detectRuntimePlayerType(roots: List<AccessibilityNodeInfo>): DetectedPlayerType {
+        for (root in roots) {
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var count = 0
+            while (queue.isNotEmpty() && count < 250) {
+                val node = queue.poll() ?: break
+                count++
+                val className = node.className?.toString().orEmpty()
+                val viewId = node.viewIdResourceName?.lowercase(Locale.US).orEmpty()
+
+                // Check for Chromium / WebView container
+                if (className.contains("WebView", ignoreCase = true) ||
+                    className.contains("Chromium", ignoreCase = true) ||
+                    className.contains("android.webkit", ignoreCase = true) ||
+                    viewId.contains("webview") ||
+                    viewId.contains("web_view")
+                ) {
+                    return DetectedPlayerType.WEBVIEW_HTML5
+                }
+
+                // Check for Native ExoPlayer / Media3 / SurfaceView
+                if (className.contains("PlayerView", ignoreCase = true) ||
+                    className.contains("ExoPlayer", ignoreCase = true) ||
+                    className.contains("SurfaceView", ignoreCase = true) ||
+                    className.contains("TextureView", ignoreCase = true) ||
+                    viewId.contains("exo_") ||
+                    viewId.contains("btn_playback_speed")
+                ) {
+                    return DetectedPlayerType.NATIVE_EXOPLAYER
+                }
+
+                for (i in 0 until node.childCount) {
+                    node.getChild(i)?.let { queue.add(it) }
+                }
+            }
+        }
+        return DetectedPlayerType.CUSTOM_UNKNOWN
+    }
+
+    /**
      * Normalizes a speed string (e.g. "1x", "1.0x", "1.00x", "10x", "10.0x", "Normal") into a canonical Float.
      */
     fun normalizeSpeedLabel(speedStr: String?): Float? {
         if (speedStr.isNullOrBlank()) return null
         val trimmed = speedStr.trim().lowercase(Locale.US)
-        if (trimmed == "normal" || trimmed == "standard" || trimmed == "default") {
+        if (trimmed == "normal" || trimmed == "standard" || trimmed == "default" || trimmed == "1.0x (normal)" || trimmed == "normal (1x)") {
             return 1.0f
         }
         val clean = trimmed.replace("x", "").replace("speed", "").replace(":", "").trim()
@@ -191,45 +236,38 @@ class AccessibilityNodeOptimizer(
 
     /**
      * Extracts exact numeric speed value from node text, contentDescription, or speed option label.
-     * Prevents false substring matches like "10x" matching "1x" or "1.5x" matching "1x".
+     * Prevents false substring matches like "10x" matching "1x", "5x" matching "1.5x", etc.
      */
     fun extractSpeedFromOptionText(raw: String?): Float? {
         if (raw.isNullOrBlank()) return null
         val trimmed = raw.trim().lowercase(Locale.US)
-        if (trimmed == "normal" || trimmed == "standard" || trimmed == "default") {
+        if (trimmed == "normal" || trimmed == "standard" || trimmed == "default" || trimmed == "1.0x (normal)" || trimmed == "normal (1x)") {
             return 1.0f
         }
 
-        // 1. Direct regex for patterns like "10x", "10.0x", "10.00x", "1.25x", "0.75x", "5x", "Normal"
-        // Also supports strings like "Speed 10x", "Playback speed: 1.5x", "10x (Custom)"
-        val speedRegex = Regex("""(?:\b(?:playback\s+speed|speed)\s*[:\s]*)?(\d+(?:\.\d+)?)\s*x\b|^\s*(\d+(?:\.\d+)?)\s*x?\s*$""", RegexOption.IGNORE_CASE)
+        // Pattern 1: Exact speed with 'x' (e.g. "1.25x", "10x", "5.0x", "1.5 X", "speed 2x", "playback speed: 1.5x")
+        val speedRegex = Regex("""(?:\b(?:playback\s+speed|playback\s+rate|speed)\s*[:\s]*)?(\d+(?:\.\d+)?)\s*x\b""", RegexOption.IGNORE_CASE)
         val match = speedRegex.find(trimmed)
         if (match != null) {
-            val numStr = match.groupValues[1].ifEmpty { match.groupValues[2] }
-            if (numStr.isNotEmpty()) {
-                val parsed = numStr.toFloatOrNull()
-                if (parsed != null) return parsed
-            }
+            val numStr = match.groupValues[1]
+            val parsed = numStr.toFloatOrNull()
+            if (parsed != null) return parsed
         }
 
-        // 2. Fallback regex to find isolated numbers with 'x' (e.g., "(1.5x)")
-        val fallbackRegex = Regex("""\b(\d+(?:\.\d+)?)\s*x\b""", RegexOption.IGNORE_CASE)
-        val fallbackMatch = fallbackRegex.find(trimmed)
-        if (fallbackMatch != null) {
-            val numStr = fallbackMatch.groupValues[1]
-            return numStr.toFloatOrNull()
-        }
-
-        // 3. Fallback for pure numbers if short
-        if (trimmed.length in 1..5) {
-            return trimmed.toFloatOrNull()
+        // Pattern 2: String consists purely of a numeric rate (e.g. "1.25", "10", "2.0", "1.5")
+        val exactNumRegex = Regex("""^\s*(\d+(?:\.\d+)?)\s*x?\s*$""", RegexOption.IGNORE_CASE)
+        val exactMatch = exactNumRegex.find(trimmed)
+        if (exactMatch != null) {
+            val numStr = exactMatch.groupValues[1]
+            val parsed = numStr.toFloatOrNull()
+            if (parsed != null) return parsed
         }
 
         return null
     }
 
     /**
-     * Exact float comparison with tolerance for speed matching.
+     * Exact float comparison with strict tolerance for speed matching.
      */
     fun speedValuesEqual(speed1: Float, speed2: Float): Boolean {
         return abs(speed1 - speed2) < 0.01f
@@ -540,6 +578,65 @@ class AccessibilityNodeOptimizer(
         }
 
         return null
+    }
+
+    /**
+     * Finds clickable candidate triggers within the video player for custom players (e.g. DIKSHA custom LMS player)
+     * where controls lack explicit standard resource IDs or speed text labels.
+     */
+    fun findCustomPlayerCandidateTriggers(
+        roots: List<AccessibilityNodeInfo>,
+        playerBounds: Rect
+    ): List<AccessibilityNodeInfo> {
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        val rect = Rect()
+
+        for (root in roots) {
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var count = 0
+
+            while (queue.isNotEmpty() && count < config.maxNodesLimit) {
+                val curr = queue.poll() ?: break
+                count++
+
+                curr.getBoundsInScreen(rect)
+                val id = curr.viewIdResourceName?.lowercase(Locale.US).orEmpty()
+                val desc = curr.contentDescription?.toString()?.lowercase(Locale.US).orEmpty()
+                val text = curr.text?.toString()?.lowercase(Locale.US).orEmpty()
+                val className = curr.className?.toString().orEmpty()
+
+                // Check if inside video player bounds
+                val isInsidePlayer = playerBounds.isEmpty || (rect.left >= playerBounds.left - 20 && rect.right <= playerBounds.right + 20 &&
+                        rect.top >= playerBounds.top - 20 && rect.bottom <= playerBounds.bottom + 20)
+
+                // Skip known standard play/pause/seek controls
+                val isPlaybackControl = id.contains("play") || id.contains("pause") || id.contains("ffwd") ||
+                        id.contains("rew") || desc.contains("play") || desc.contains("pause") ||
+                        desc.contains("forward") || desc.contains("rewind") || className.contains("SeekBar")
+
+                if (isInsidePlayer && !isPlaybackControl) {
+                    // Check for settings / options / menu candidates or right-side player control buttons
+                    val isCandidate = desc.contains("settings") || desc.contains("option") || desc.contains("more") ||
+                            desc.contains("menu") || desc.contains("overflow") || desc.contains("quality") ||
+                            desc.contains("rate") || desc.contains("speed") || text.contains("speed") ||
+                            (curr.isClickable && (className.contains("ImageButton") || className.contains("Button") || className.contains("ImageView")))
+
+                    if (isCandidate) {
+                        if (curr.isClickable) {
+                            candidates.add(curr)
+                        } else if (curr.parent?.isClickable == true) {
+                            candidates.add(curr.parent)
+                        }
+                    }
+                }
+
+                for (i in 0 until curr.childCount) {
+                    curr.getChild(i)?.let { queue.add(it) }
+                }
+            }
+        }
+        return candidates
     }
 
     /**

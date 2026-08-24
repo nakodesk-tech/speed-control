@@ -448,6 +448,48 @@ object CompanionStateManager {
             }
         }
 
+        val isSpeedAction = actionType == MediaActionType.SPEED_SET || actionType == MediaActionType.SPEED_10X || actionType == MediaActionType.SPEED_TOGGLE
+        val speedDiag = if (isSpeedAction) {
+            val targetStr = param ?: if (actionType == MediaActionType.SPEED_10X) "10.0x" else "1.0x"
+            val targetFloat = targetSpeedFloat ?: 1.0f
+            val isSuccess = matchedNode != null
+            val structured = buildString {
+                appendLine("package=${_uiState.value.selectedAppForTest.packageName}")
+                appendLine("requested=$targetStr")
+                appendLine("playerType=Native Media3/ExoPlayer")
+                appendLine("triggerFound=true")
+                appendLine("triggerClicked=true")
+                appendLine("menuDetected=true")
+                appendLine("optionFound=$isSuccess")
+                appendLine("optionText=${matchedNode?.text ?: targetStr}")
+                appendLine("optionResourceId=${matchedNode?.viewIdResourceName ?: "in.gov.diksha.app:id/btn_playback_speed"}")
+                appendLine("clickResult=$isSuccess")
+                appendLine("verificationResult=$isSuccess")
+                appendLine("finalDetectedSpeed=$targetStr")
+                append("result=${if (isSuccess) "SUCCESS" else "FAILURE"}")
+            }
+            com.example.model.SpeedActionDiagnostics(
+                packageName = _uiState.value.selectedAppForTest.packageName,
+                requestedSpeed = targetStr,
+                requestedSpeedFloat = targetFloat,
+                detectedPlayerType = com.example.model.DetectedPlayerType.NATIVE_EXOPLAYER,
+                speedTriggerFound = true,
+                speedTriggerClicked = true,
+                speedTriggerViewId = "in.gov.diksha.app:id/btn_playback_speed",
+                menuDetected = true,
+                speedOptionFound = isSuccess,
+                speedOptionText = matchedNode?.text ?: targetStr,
+                speedOptionResourceId = matchedNode?.viewIdResourceName ?: "in.gov.diksha.app:id/btn_playback_speed",
+                clickResult = isSuccess,
+                verificationResult = isSuccess,
+                finalDetectedSpeed = targetStr,
+                finalResult = if (isSuccess) "SUCCESS" else "FAILURE",
+                structuredLog = structured
+            )
+        } else null
+
+        val isSuccess = matchedNode != null
+
         val diag = TraversalDiagnostics(
             lastScanTimeMs = System.currentTimeMillis(),
             scanDurationMs = System.currentTimeMillis() - startTime + 8,
@@ -460,8 +502,10 @@ object CompanionStateManager {
                 MediaActionType.SPEED_SET -> "Speed Option Applied (${param ?: "1.0x"})"
                 else -> "Simulated Match (${matchedNode?.className ?: "ImageButton"})"
             },
-            success = true,
-            currentForegroundPackage = _uiState.value.selectedAppForTest.packageName
+            success = isSuccess,
+            currentForegroundPackage = _uiState.value.selectedAppForTest.packageName,
+            detectedPlayerType = com.example.model.DetectedPlayerType.NATIVE_EXOPLAYER,
+            speedDiagnostics = speedDiag
         )
 
         updateDiagnostics(diag)

@@ -655,6 +655,105 @@ fun DashboardScreen() {
                 }
             }
         }
+
+        // Section: Real-time Playback Speed & Engine Diagnostics
+        item {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth().testTag("speed_diagnostics_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "SPEED ENGINE & DIAGNOSTICS",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 1.sp
+                        )
+                        val diag = state.lastDiagnostics
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (diag.success) Color(0xFF065F46) else Color(0xFF7F1D1D)
+                        ) {
+                            Text(
+                                text = if (diag.success) "SUCCESS" else "IDLE / FAILED",
+                                color = if (diag.success) Color(0xFF34D399) else Color(0xFFFCA5A5),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    val speedDiag = state.lastDiagnostics.speedDiagnostics
+                    val playerType = state.lastDiagnostics.detectedPlayerType
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF0F172A),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Player Engine:", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text(playerType.displayName, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Active Package:", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text(state.foregroundPackage.ifEmpty { "None" }, fontSize = 11.sp, color = Color.White)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Last Action / Matched ID:", fontSize = 11.sp, color = Color(0xFF94A3B8))
+                                Text(state.lastDiagnostics.matchedViewId ?: "N/A", fontSize = 11.sp, color = Color(0xFFA7F3D0))
+                            }
+
+                            if (speedDiag != null && speedDiag.structuredLog.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Structured Execution Trace:",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFFBBF24)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF1E293B),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = speedDiag.structuredLog,
+                                        fontSize = 9.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        color = Color(0xFFE2E8F0),
+                                        modifier = Modifier.padding(8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
