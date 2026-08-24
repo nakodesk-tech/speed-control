@@ -92,4 +92,14 @@ class ExampleUnitTest {
         assertFalse(optimizer.matchesRequestedSpeed("2.0x", null, 5.0f))
         assertFalse(optimizer.matchesRequestedSpeed("10.0x", null, 5.0f))
     }
+
+    @Test
+    fun testWebBridgeScriptContainsTampermonkeyCore() {
+        val script = com.example.web.DikshaWebBridge.INJECTION_SCRIPT
+        assertTrue(script.contains("playbackRate"))
+        assertTrue(script.contains("MutationObserver"))
+        assertTrue(script.contains("__setEduVideoSpeed"))
+        assertTrue(script.contains("__queryEduVideoStatus"))
+        assertTrue(script.contains("EduBridge"))
+    }
 }
