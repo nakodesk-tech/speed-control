@@ -8,12 +8,16 @@ import com.example.model.TraversalDiagnostics
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.Locale
 
 data class CompanionUiState(
     val isAccessibilityConnected: Boolean = false,
     val isOverlayPermissionGranted: Boolean = false,
     val isOverlayServiceRunning: Boolean = false,
     val isPlaying: Boolean = false,
+    val playbackStatusSource: String = "Idle",
+    val detectedTimecode: String? = null,
+    val detectedSpeed: String? = null,
     val currentPlaybackSpeed: String = "1.0x",
     val isTurbo10xActive: Boolean = false,
     val foregroundPackage: String = "None",
@@ -61,6 +65,20 @@ object CompanionStateManager {
             foregroundPackage = pkg,
             foregroundAppTitle = title,
             isTargetAppActive = isTarget
+        )
+    }
+
+    fun updateDetectedPlaybackStatus(
+        isPlaying: Boolean,
+        source: String,
+        detectedSpeed: String? = null,
+        timecode: String? = null
+    ) {
+        _uiState.value = _uiState.value.copy(
+            isPlaying = isPlaying,
+            playbackStatusSource = source,
+            detectedSpeed = detectedSpeed ?: _uiState.value.detectedSpeed,
+            detectedTimecode = timecode ?: _uiState.value.detectedTimecode
         )
     }
 
@@ -130,12 +148,13 @@ object CompanionStateManager {
     }
 
     fun setPlaybackSpeed(speed: String) {
+        val is10x = speed == "10x" || speed == "10.0x"
         _uiState.value = _uiState.value.copy(
             currentPlaybackSpeed = speed,
-            isTurbo10xActive = speed == "10x" || speed == "10.0x"
+            isTurbo10xActive = is10x
         )
-        if (speed == "10x" || speed == "10.0x") {
-            triggerMediaAction(MediaActionType.SPEED_10X, "10x")
+        if (is10x) {
+            triggerMediaAction(MediaActionType.SPEED_10X, "10.0x")
         } else {
             triggerMediaAction(MediaActionType.SPEED_SET, speed)
         }
@@ -144,8 +163,11 @@ object CompanionStateManager {
     fun setTurbo10xActive(active: Boolean) {
         _uiState.value = _uiState.value.copy(
             isTurbo10xActive = active,
-            currentPlaybackSpeed = if (active) "10x" else _uiState.value.currentPlaybackSpeed
+            currentPlaybackSpeed = if (active) "10.0x" else _uiState.value.currentPlaybackSpeed
         )
+        if (active) {
+            triggerMediaAction(MediaActionType.SPEED_10X, "10.0x")
+        }
     }
 
     fun togglePlayPause() {
@@ -169,6 +191,8 @@ object CompanionStateManager {
                 MediaActionType.FAST_FORWARD -> app?.customForwardIds.orEmpty()
                 MediaActionType.REWIND -> app?.customRewindIds.orEmpty()
                 MediaActionType.NEXT -> app?.customNextIds.orEmpty()
+                MediaActionType.SPEED_TOGGLE, MediaActionType.SPEED_10X, MediaActionType.SPEED_SET -> app?.customSpeedIds.orEmpty()
+                MediaActionType.CAPTIONS -> app?.customCaptionsIds.orEmpty()
                 else -> emptyList()
             }
             service.triggerAction(actionType, customIds, param)
@@ -188,17 +212,33 @@ object CompanionStateManager {
         }
         flatten(mockTree)
 
+        val optimizer = AccessibilityNodeOptimizer()
+        val targetSpeedFloat = param?.let { optimizer.normalizeSpeedLabel(it) } ?: when (actionType) {
+            MediaActionType.SPEED_10X -> 10.0f
+            else -> null
+        }
+
         val matchedNode = flattened.find {
-            val str = "${it.viewIdResourceName} ${it.contentDescription} ${it.text}".lowercase()
+            val id = it.viewIdResourceName.orEmpty().lowercase(Locale.US)
+            val desc = it.contentDescription.orEmpty().lowercase(Locale.US)
+            val text = it.text.orEmpty().lowercase(Locale.US)
+            val str = "$id $desc $text"
+
             when (actionType) {
                 MediaActionType.PLAY_PAUSE, MediaActionType.PLAY -> str.contains("play")
                 MediaActionType.PAUSE -> str.contains("pause")
                 MediaActionType.FAST_FORWARD -> str.contains("forward") || str.contains("ffwd") || str.contains("10")
                 MediaActionType.REWIND -> str.contains("rewind") || str.contains("rew")
                 MediaActionType.NEXT -> str.contains("next")
-                MediaActionType.SPEED_10X -> str.contains("speed") || str.contains("10x")
-                MediaActionType.SPEED_TOGGLE, MediaActionType.SPEED_SET -> str.contains("speed")
-                MediaActionType.CAPTIONS -> str.contains("cc") || str.contains("caption")
+                MediaActionType.SPEED_10X, MediaActionType.SPEED_SET, MediaActionType.SPEED_TOGGLE -> {
+                    if (targetSpeedFloat != null) {
+                        optimizer.matchesRequestedSpeed(it.text, it.contentDescription, targetSpeedFloat) ||
+                                str.contains("btn_playback_speed") || str.contains("speed")
+                    } else {
+                        str.contains("speed") || str.contains("10x")
+                    }
+                }
+                MediaActionType.CAPTIONS -> str.contains("cc") || str.contains("caption") || str.contains("subtitles")
                 else -> false
             }
         }
@@ -209,8 +249,12 @@ object CompanionStateManager {
             totalNodesVisited = flattened.size,
             maxDepthReached = 4,
             matchedAction = actionType,
-            matchedViewId = matchedNode?.viewIdResourceName ?: "simulated:id/exo_play",
-            matchedByHeuristic = if (actionType == MediaActionType.SPEED_10X) "10x Turbo Speed Activated" else "Simulated Match (${matchedNode?.className ?: "ImageButton"})",
+            matchedViewId = matchedNode?.viewIdResourceName ?: "in.gov.diksha.app:id/btn_playback_speed",
+            matchedByHeuristic = when (actionType) {
+                MediaActionType.SPEED_10X -> "10x Turbo Speed Selected (10.0x)"
+                MediaActionType.SPEED_SET -> "Speed Option Applied (${param ?: "1.0x"})"
+                else -> "Simulated Match (${matchedNode?.className ?: "ImageButton"})"
+            },
             success = true,
             currentForegroundPackage = _uiState.value.selectedAppForTest.packageName
         )
@@ -276,6 +320,25 @@ object CompanionStateManager {
                                 )
                             )
                         )
+                    )
+                ),
+                // Simulated Speed Selection Dialog / Bottom Sheet
+                SimulatedNode(
+                    id = "speed_dialog",
+                    className = "android.widget.LinearLayout",
+                    viewIdResourceName = "in.gov.diksha.app:id/speed_options_container",
+                    children = listOf(
+                        SimulatedNode(id = "sp_1_0", className = "android.widget.TextView", text = "1.0x", contentDescription = "Normal Speed"),
+                        SimulatedNode(id = "sp_1_25", className = "android.widget.TextView", text = "1.25x", contentDescription = "1.25x Speed"),
+                        SimulatedNode(id = "sp_1_5", className = "android.widget.TextView", text = "1.5x", contentDescription = "1.5x Speed"),
+                        SimulatedNode(id = "sp_1_75", className = "android.widget.TextView", text = "1.75x", contentDescription = "1.75x Speed"),
+                        SimulatedNode(id = "sp_2_0", className = "android.widget.TextView", text = "2.0x", contentDescription = "2.0x Speed"),
+                        SimulatedNode(id = "sp_2_5", className = "android.widget.TextView", text = "2.5x", contentDescription = "2.5x Speed"),
+                        SimulatedNode(id = "sp_3_0", className = "android.widget.TextView", text = "3.0x", contentDescription = "3.0x Speed"),
+                        SimulatedNode(id = "sp_4_0", className = "android.widget.TextView", text = "4.0x", contentDescription = "4.0x Speed"),
+                        SimulatedNode(id = "sp_5_0", className = "android.widget.TextView", text = "5.0x", contentDescription = "5.0x Speed"),
+                        SimulatedNode(id = "sp_7_5", className = "android.widget.TextView", text = "7.5x", contentDescription = "7.5x Speed"),
+                        SimulatedNode(id = "sp_10_0", className = "android.widget.TextView", text = "10.0x", contentDescription = "10.0x Turbo Speed")
                     )
                 ),
                 SimulatedNode(

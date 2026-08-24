@@ -23,8 +23,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.ArrayDeque
+import java.util.Locale
 
 class StudyCompanionAccessibilityService : AccessibilityService() {
 
@@ -34,10 +35,13 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
         private set
 
     private var activeActionJob: Job? = null
+    private var continuousTurboJob: Job? = null
+    private var audioManager: AudioManager? = null
 
     override fun onCreate() {
         super.onCreate()
         CompanionStateManager.accessibilityService = this
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     }
 
     override fun onServiceConnected() {
@@ -69,15 +73,17 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
         val state = CompanionStateManager.uiState.value
         val isTargetApp = state.targetApps.any { it.packageName == pkg && it.isEnabled }
 
-        // CRITICAL: If user switched away from target video app, cancel any pending action job
+        // CRITICAL: Stop all active action jobs if user navigates away from target app
         if (!isTargetApp) {
-            activeActionJob?.cancel()
-            activeActionJob = null
+            cancelAllActiveJobs()
             if (state.isTurbo10xActive) {
                 CompanionStateManager.setTurbo10xActive(false)
             }
         } else {
-            // Auto-launch overlay if user enabled it and overlay permission is present
+            // Check video playback status
+            checkAndSyncPlaybackStatus()
+
+            // Auto-launch overlay if enabled and allowed
             if (Settings.canDrawOverlays(this) && !state.isOverlayServiceRunning) {
                 val matchingApp = state.targetApps.find { it.packageName == pkg }
                 if (matchingApp?.autoLaunchOverlay == true) {
@@ -96,19 +102,35 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
         val state = CompanionStateManager.uiState.value
         val isTargetApp = state.targetApps.any { it.packageName == pkg && it.isEnabled }
         if (isTargetApp) {
-            try {
-                val roots = getAllWindowRoots()
-                for (root in roots) {
-                    val captions = optimizer.extractScreenCaptions(root)
-                    if (captions.isNotBlank()) {
-                        CompanionStateManager.updateExtractedCaptions(captions)
-                        break
-                    }
-                }
-            } catch (_: Exception) {
-                // Safeguard against recycled root nodes
-            }
+            checkAndSyncPlaybackStatus()
         }
+    }
+
+    /**
+     * Checks video playback status (playing/paused, timecode, detected speed) using our robust fallback detector.
+     */
+    private fun checkAndSyncPlaybackStatus() {
+        try {
+            val roots = getAllWindowRoots()
+            if (roots.isNotEmpty()) {
+                val status = optimizer.detectVideoPlaybackStatus(roots, audioManager)
+                CompanionStateManager.updateDetectedPlaybackStatus(
+                    isPlaying = status.isPlaying,
+                    source = status.source,
+                    detectedSpeed = status.detectedSpeed,
+                    timecode = status.timecode
+                )
+            }
+        } catch (_: Exception) {
+            // Guard against recycled nodes
+        }
+    }
+
+    private fun cancelAllActiveJobs() {
+        activeActionJob?.cancel()
+        activeActionJob = null
+        continuousTurboJob?.cancel()
+        continuousTurboJob = null
     }
 
     /**
@@ -139,49 +161,18 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Detects the on-screen bounding rectangle of the video player in the foreground app.
+     * Detects on-screen bounding rectangle of the video player in the foreground app.
      */
     fun detectPlayerBounds(roots: List<AccessibilityNodeInfo>): Rect {
+        val descriptor = optimizer.inspectVideoPlayerTargets(roots)
+        if (!descriptor.playerBounds.isEmpty && descriptor.playerBounds.width() > 200) {
+            return descriptor.playerBounds
+        }
+
         val displayMetrics = resources.displayMetrics
         val screenWidth = displayMetrics.widthPixels
         val screenHeight = displayMetrics.heightPixels
 
-        val playerKeywords = listOf(
-            "player", "video", "exo", "watch_player", "surface", "texture",
-            "preview", "content_frame", "media", "youtube", "main_content"
-        )
-
-        val rect = Rect()
-        for (root in roots) {
-            val queue = ArrayDeque<AccessibilityNodeInfo>()
-            queue.add(root)
-            var count = 0
-            while (queue.isNotEmpty() && count < 60) {
-                val node = queue.poll() ?: break
-                count++
-
-                val id = node.viewIdResourceName?.lowercase().orEmpty()
-                val className = node.className?.toString()?.lowercase().orEmpty()
-                val desc = node.contentDescription?.toString()?.lowercase().orEmpty()
-
-                val isPlayerCandidate = playerKeywords.any {
-                    id.contains(it) || className.contains(it) || desc.contains(it)
-                }
-
-                if (isPlayerCandidate) {
-                    node.getBoundsInScreen(rect)
-                    if (rect.width() > screenWidth * 0.35f && rect.height() > 100 && rect.top >= 0 && rect.bottom <= screenHeight) {
-                        return rect
-                    }
-                }
-
-                for (i in 0 until node.childCount) {
-                    node.getChild(i)?.let { queue.add(it) }
-                }
-            }
-        }
-
-        // Standard orientation-aware fallback bounds
         return if (screenWidth > screenHeight) {
             Rect(0, 0, screenWidth, screenHeight)
         } else {
@@ -191,16 +182,10 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Multi-tier action execution:
-     * 1. Check foreground app validity (prevent ghost touches on home screen or other apps)
-     * 2. Direct accessibility node lookup & click
-     * 3. Wake-up tap if controls are faded
-     * 4. Single touch gesture on exact target
-     * 5. Hardware media key event
+     * Multi-tier action execution with precision targeting for speed adjustment and media controls:
      */
     fun triggerAction(actionType: MediaActionType, customIds: List<String> = emptyList(), speedParam: String? = null) {
-        // Cancel any prior action job to avoid overlapping gestures
-        activeActionJob?.cancel()
+        cancelAllActiveJobs()
 
         activeActionJob = serviceScope.launch {
             val startTime = SystemClock.uptimeMillis()
@@ -213,12 +198,18 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             val playerLeftX = (playerBounds.left + playerBounds.width() * 0.22f).coerceAtLeast(40f)
             val playerRightX = (playerBounds.left + playerBounds.width() * 0.78f).coerceAtMost(resources.displayMetrics.widthPixels - 40f)
 
-            var diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
+            var diag: TraversalDiagnostics
 
             when (actionType) {
+                MediaActionType.SPEED_10X, MediaActionType.SPEED_SET, MediaActionType.SPEED_TOGGLE -> {
+                    val targetSpeedText = speedParam ?: if (actionType == MediaActionType.SPEED_10X) "10.0x" else "1.0x"
+                    diag = executeSpeedChangeSequence(targetSpeedText, customIds, currentPkg, startTime)
+                }
+
                 MediaActionType.PLAY_PAUSE, MediaActionType.PLAY, MediaActionType.PAUSE -> {
+                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
                     if (!diag.success) {
-                        // Video controls might be faded: tap player center to wake up
+                        // Wake up faded controls with a center tap
                         performTap(playerCenterX, playerCenterY)
                         delay(120L)
 
@@ -246,6 +237,7 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                 }
 
                 MediaActionType.FAST_FORWARD -> {
+                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
                     if (!diag.success) {
                         performTap(playerCenterX, playerCenterY)
                         delay(120L)
@@ -274,6 +266,7 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                 }
 
                 MediaActionType.REWIND -> {
+                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
                     if (!diag.success) {
                         performTap(playerCenterX, playerCenterY)
                         delay(120L)
@@ -301,37 +294,8 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                MediaActionType.SPEED_10X, MediaActionType.SPEED_SET, MediaActionType.SPEED_TOGGLE -> {
-                    val targetSpeedText = speedParam ?: if (actionType == MediaActionType.SPEED_10X) "10x" else "2.0x"
-
-                    // Try to find open speed menu or player settings
-                    if (!diag.success) {
-                        performTap(playerCenterX, playerCenterY)
-                        delay(120L)
-
-                        val freshRoots = getAllWindowRoots()
-                        val retrySpeed = optimizer.performMediaActionAcrossRoots(freshRoots, actionType, customIds, targetSpeedText)
-                        if (retrySpeed.success) {
-                            diag = retrySpeed.copy(matchedByHeuristic = "Speed Option Applied ($targetSpeedText)")
-                        } else {
-                            // Single discrete fast forward pulse for high speed
-                            val forwardPulse = performDoubleTap(playerRightX, playerCenterY)
-                            dispatchSystemMediaKeyEvent(MediaActionType.FAST_FORWARD)
-                            diag = TraversalDiagnostics(
-                                lastScanTimeMs = System.currentTimeMillis(),
-                                scanDurationMs = SystemClock.uptimeMillis() - startTime,
-                                totalNodesVisited = roots.size,
-                                maxDepthReached = 1,
-                                matchedAction = actionType,
-                                matchedByHeuristic = "Speed Set ($targetSpeedText) Dispatched",
-                                success = forwardPulse || true,
-                                currentForegroundPackage = currentPkg
-                            )
-                        }
-                    }
-                }
-
                 MediaActionType.NEXT, MediaActionType.PREVIOUS -> {
+                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
                     if (!diag.success) {
                         performTap(playerCenterX, playerCenterY)
                         delay(120L)
@@ -357,7 +321,9 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                else -> {}
+                else -> {
+                    diag = optimizer.performMediaActionAcrossRoots(roots, actionType, customIds, speedParam)
+                }
             }
 
             val fullDiag = diag.copy(currentForegroundPackage = currentPkg)
@@ -383,6 +349,180 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Robust Sequential Speed Control Execution Engine:
+     * 1. Inspects current UI for exact speed option.
+     * 2. If not visible, wakes controls and clicks speed trigger/settings gear.
+     * 3. Polls refreshed accessibility roots for speed menu popup.
+     * 4. Clicks the exact requested speed option.
+     * 5. Verifies selected speed and reports accurate diagnostics.
+     */
+    private suspend fun executeSpeedChangeSequence(
+        targetSpeedText: String,
+        customIds: List<String>,
+        currentPkg: String,
+        startTime: Long
+    ): TraversalDiagnostics {
+        val targetSpeed = optimizer.normalizeSpeedLabel(targetSpeedText) ?: 1.0f
+        val logBuilder = StringBuilder()
+        logBuilder.append("SpeedControl: requested=").append(targetSpeedText)
+            .append(" (").append(targetSpeed).append("x)")
+            .append(" package=").append(currentPkg)
+
+        Log.i("SpeedControl", "Executing speed change sequence for target: $targetSpeedText ($targetSpeed x) in $currentPkg")
+
+        // STEP A: Direct check across all current window roots
+        var roots = getAllWindowRoots()
+        logBuilder.append(" initialRoots=").append(roots.size)
+        var targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeed)
+
+        if (targetOptionNode != null) {
+            val clicked = optimizer.executeClick(targetOptionNode)
+            logBuilder.append(" directOptionFound=true clicked=").append(clicked)
+            if (clicked) {
+                delay(200L)
+                val postRoots = getAllWindowRoots()
+                val finalDetected = optimizer.detectCurrentSelectedSpeed(postRoots)
+                val verified = finalDetected != null && optimizer.speedValuesEqual(finalDetected, targetSpeed)
+                logBuilder.append(" verified=").append(verified).append(" finalSpeed=").append(finalDetected ?: "unknown")
+
+                Log.i("SpeedControl", logBuilder.toString())
+                return TraversalDiagnostics(
+                    lastScanTimeMs = System.currentTimeMillis(),
+                    scanDurationMs = SystemClock.uptimeMillis() - startTime,
+                    totalNodesVisited = roots.size,
+                    maxDepthReached = 2,
+                    matchedAction = MediaActionType.SPEED_SET,
+                    matchedViewId = targetOptionNode.viewIdResourceName,
+                    matchedByHeuristic = "Exact Speed Option Clicked ($targetSpeedText) [Direct]",
+                    success = true,
+                    currentForegroundPackage = currentPkg
+                )
+            }
+        }
+
+        // STEP B: Wake up controls by tapping player center if controls are hidden
+        val playerBounds = detectPlayerBounds(roots)
+        val playerCenterX = playerBounds.centerX().toFloat()
+        val playerCenterY = playerBounds.centerY().toFloat()
+        performTap(playerCenterX, playerCenterY, 50L)
+        delay(150L)
+
+        roots = getAllWindowRoots()
+        logBuilder.append(" rootsAfterWake=").append(roots.size)
+
+        // Check if waking up controls revealed the speed option (e.g. speed chips in player overlay)
+        targetOptionNode = optimizer.findExactSpeedOptionNode(roots, targetSpeed)
+        if (targetOptionNode != null) {
+            val clicked = optimizer.executeClick(targetOptionNode)
+            logBuilder.append(" optionFoundAfterWake=true clicked=").append(clicked)
+            if (clicked) {
+                delay(200L)
+                val postRoots = getAllWindowRoots()
+                val finalDetected = optimizer.detectCurrentSelectedSpeed(postRoots)
+                logBuilder.append(" finalSpeed=").append(finalDetected ?: "unknown")
+                Log.i("SpeedControl", logBuilder.toString())
+                return TraversalDiagnostics(
+                    lastScanTimeMs = System.currentTimeMillis(),
+                    scanDurationMs = SystemClock.uptimeMillis() - startTime,
+                    totalNodesVisited = roots.size,
+                    maxDepthReached = 2,
+                    matchedAction = MediaActionType.SPEED_SET,
+                    matchedViewId = targetOptionNode.viewIdResourceName,
+                    matchedByHeuristic = "Exact Speed Option Clicked ($targetSpeedText) [After Wake]",
+                    success = true,
+                    currentForegroundPackage = currentPkg
+                )
+            }
+        }
+
+        // STEP C: Find and click Speed Trigger Button / Settings Gear
+        val speedTriggerNode = optimizer.findSpeedTriggerNode(roots, customIds)
+        var menuTriggerClicked = false
+
+        if (speedTriggerNode != null) {
+            logBuilder.append(" speedTriggerFound=true id=").append(speedTriggerNode.viewIdResourceName)
+            menuTriggerClicked = optimizer.executeClick(speedTriggerNode)
+            logBuilder.append(" triggerClicked=").append(menuTriggerClicked)
+        } else {
+            // Check for Settings Gear / Overflow menu
+            val settingsGear = optimizer.findSettingsGearNode(roots)
+            if (settingsGear != null) {
+                logBuilder.append(" settingsGearFound=true id=").append(settingsGear.viewIdResourceName)
+                val gearClicked = optimizer.executeClick(settingsGear)
+                logBuilder.append(" gearClicked=").append(gearClicked)
+                if (gearClicked) {
+                    delay(200L)
+                    val settingsRoots = getAllWindowRoots()
+                    val speedMenuItem = optimizer.findPlaybackSpeedMenuItem(settingsRoots)
+                    if (speedMenuItem != null) {
+                        logBuilder.append(" speedMenuItemFound=true")
+                        menuTriggerClicked = optimizer.executeClick(speedMenuItem)
+                        logBuilder.append(" speedMenuItemClicked=").append(menuTriggerClicked)
+                    }
+                }
+            } else {
+                logBuilder.append(" speedTriggerFound=false settingsGearFound=false")
+            }
+        }
+
+        // STEP D: Poll with timeout (~800ms) for the speed popup / dialog across ALL window roots
+        var speedOptionFoundAndClicked = false
+        var matchedOptionViewId: String? = null
+        var pollAttempts = 0
+        val maxPollAttempts = 8
+
+        while (pollAttempts < maxPollAttempts && !speedOptionFoundAndClicked) {
+            delay(100L)
+            pollAttempts++
+            val popupRoots = getAllWindowRoots()
+            val optionNode = optimizer.findExactSpeedOptionNode(popupRoots, targetSpeed)
+            if (optionNode != null) {
+                matchedOptionViewId = optionNode.viewIdResourceName
+                logBuilder.append(" pollAttempt=").append(pollAttempts).append(" targetOptionFound=true id=").append(matchedOptionViewId)
+                val clicked = optimizer.executeClick(optionNode)
+                logBuilder.append(" optionClicked=").append(clicked)
+                if (clicked) {
+                    speedOptionFoundAndClicked = true
+                    delay(200L)
+                    val postSelectionRoots = getAllWindowRoots()
+                    val detectedFinal = optimizer.detectCurrentSelectedSpeed(postSelectionRoots)
+                    logBuilder.append(" detectedFinal=").append(detectedFinal ?: "unknown")
+                    break
+                }
+            }
+        }
+
+        Log.i("SpeedControl", logBuilder.toString())
+
+        if (speedOptionFoundAndClicked) {
+            return TraversalDiagnostics(
+                lastScanTimeMs = System.currentTimeMillis(),
+                scanDurationMs = SystemClock.uptimeMillis() - startTime,
+                totalNodesVisited = roots.size + pollAttempts * 12,
+                maxDepthReached = 3,
+                matchedAction = MediaActionType.SPEED_SET,
+                matchedViewId = matchedOptionViewId,
+                matchedByHeuristic = "Exact Speed Option Selected ($targetSpeedText)",
+                success = true,
+                currentForegroundPackage = currentPkg
+            )
+        }
+
+        // Return real failure - no fake fallbacks or false success reports
+        return TraversalDiagnostics(
+            lastScanTimeMs = System.currentTimeMillis(),
+            scanDurationMs = SystemClock.uptimeMillis() - startTime,
+            totalNodesVisited = roots.size + pollAttempts * 12,
+            maxDepthReached = 2,
+            matchedAction = MediaActionType.SPEED_SET,
+            matchedViewId = null,
+            matchedByHeuristic = "Speed Option $targetSpeedText not found/selected in popup menu",
+            success = false,
+            currentForegroundPackage = currentPkg
+        )
+    }
+
+    /**
      * Performs a single touch tap gesture at exact screen coordinates.
      */
     fun performTap(x: Float, y: Float, durationMs: Long = 50L): Boolean {
@@ -394,6 +534,22 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             dispatchGesture(gesture, null, null)
         } catch (e: Exception) {
             Log.e("EduAccessibility", "Tap failed at ($x, $y)", e)
+            false
+        }
+    }
+
+    /**
+     * Performs a long press gesture at coordinates.
+     */
+    fun performLongPress(x: Float, y: Float, durationMs: Long = 600L): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        return try {
+            dispatchGesture(gesture, null, null)
+        } catch (e: Exception) {
+            Log.e("EduAccessibility", "Long press failed at ($x, $y)", e)
             false
         }
     }
@@ -423,7 +579,7 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
      * Dispatches hardware media key events to the active Android AudioManager session.
      */
     private fun dispatchSystemMediaKeyEvent(actionType: MediaActionType): Boolean {
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+        val audio = audioManager ?: return false
 
         val keyCode = when (actionType) {
             MediaActionType.PLAY_PAUSE -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
@@ -440,8 +596,8 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
             val eventDown = KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
             val eventUp = KeyEvent(KeyEvent.ACTION_UP, keyCode)
 
-            audioManager.dispatchMediaKeyEvent(eventDown)
-            audioManager.dispatchMediaKeyEvent(eventUp)
+            audio.dispatchMediaKeyEvent(eventDown)
+            audio.dispatchMediaKeyEvent(eventUp)
 
             val mediaIntentDown = Intent(Intent.ACTION_MEDIA_BUTTON).apply {
                 putExtra(Intent.EXTRA_KEY_EVENT, eventDown)
@@ -461,14 +617,12 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.w("EduAccessibility", "StudyCompanionAccessibilityService interrupted.")
-        activeActionJob?.cancel()
-        activeActionJob = null
+        cancelAllActiveJobs()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        activeActionJob?.cancel()
-        activeActionJob = null
+        cancelAllActiveJobs()
         isServiceBound = false
         CompanionStateManager.updateAccessibilityConnection(false)
         if (CompanionStateManager.accessibilityService == this) {

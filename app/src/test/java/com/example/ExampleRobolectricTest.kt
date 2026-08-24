@@ -50,6 +50,32 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun testSpeedTransitions() {
+        // 1x -> 5x
+        CompanionStateManager.setPlaybackSpeed("5.0x")
+        var state = CompanionStateManager.uiState.value
+        assertEquals("5.0x", state.currentPlaybackSpeed)
+        assertEquals(false, state.isTurbo10xActive)
+
+        // 5x -> 2x
+        CompanionStateManager.setPlaybackSpeed("2.0x")
+        state = CompanionStateManager.uiState.value
+        assertEquals("2.0x", state.currentPlaybackSpeed)
+
+        // 2x -> 10x
+        CompanionStateManager.setPlaybackSpeed("10.0x")
+        state = CompanionStateManager.uiState.value
+        assertEquals("10.0x", state.currentPlaybackSpeed)
+        assertEquals(true, state.isTurbo10xActive)
+
+        // 10x -> 1x
+        CompanionStateManager.setPlaybackSpeed("1.0x")
+        state = CompanionStateManager.uiState.value
+        assertEquals("1.0x", state.currentPlaybackSpeed)
+        assertEquals(false, state.isTurbo10xActive)
+    }
+
+    @Test
     fun testTargetAppToggle() {
         val dikshaPkg = "in.gov.diksha.app"
         CompanionStateManager.toggleTargetApp(dikshaPkg, false)
@@ -117,5 +143,11 @@ class ExampleRobolectricTest {
         state = CompanionStateManager.uiState.value
         assertTrue(state.lastDiagnostics.success)
         assertEquals(MediaActionType.CAPTIONS, state.lastDiagnostics.matchedAction)
+
+        // Test Speed Set (5.0x)
+        CompanionStateManager.simulateMediaAction(MediaActionType.SPEED_SET, "5.0x")
+        state = CompanionStateManager.uiState.value
+        assertTrue(state.lastDiagnostics.success)
+        assertEquals(MediaActionType.SPEED_SET, state.lastDiagnostics.matchedAction)
     }
 }

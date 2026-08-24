@@ -22,6 +22,7 @@ data class TargetAppConfig(
     val customForwardIds: List<String> = emptyList(),
     val customRewindIds: List<String> = emptyList(),
     val customNextIds: List<String> = emptyList(),
+    val customSpeedIds: List<String> = emptyList(),
     val customCaptionsIds: List<String> = emptyList(),
     val isBuiltIn: Boolean = false
 ) {
@@ -46,6 +47,11 @@ data class TargetAppConfig(
                 customForwardIds = listOf("in.gov.diksha.app:id/exo_ffwd", "exo_ffwd"),
                 customRewindIds = listOf("in.gov.diksha.app:id/exo_rew", "exo_rew"),
                 customNextIds = listOf("in.gov.diksha.app:id/btn_next", "in.gov.diksha.app:id/next_video"),
+                customSpeedIds = listOf(
+                    "in.gov.diksha.app:id/btn_playback_speed",
+                    "btn_playback_speed",
+                    "exo_playback_speed"
+                ),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -66,6 +72,7 @@ data class TargetAppConfig(
                 customForwardIds = listOf("org.khanacademy.android:id/exo_ffwd", "org.khanacademy.android:id/forward_10", "exo_ffwd"),
                 customRewindIds = listOf("org.khanacademy.android:id/exo_rew", "org.khanacademy.android:id/rewind_10", "exo_rew"),
                 customNextIds = listOf("org.khanacademy.android:id/next_item_button", "org.khanacademy.android:id/next_video"),
+                customSpeedIds = listOf("org.khanacademy.android:id/speed_button", "org.khanacademy.android:id/btn_speed", "exo_playback_speed"),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -80,6 +87,7 @@ data class TargetAppConfig(
                 customForwardIds = listOf("org.coursera.android:id/forward_10", "org.coursera.android:id/exo_ffwd", "exo_ffwd"),
                 customRewindIds = listOf("org.coursera.android:id/replay_10", "org.coursera.android:id/exo_rew", "exo_rew"),
                 customNextIds = listOf("org.coursera.android:id/next_item", "org.coursera.android:id/next_video"),
+                customSpeedIds = listOf("org.coursera.android:id/speed_button", "org.coursera.android:id/playback_speed"),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -94,6 +102,7 @@ data class TargetAppConfig(
                 customForwardIds = listOf("com.udemy.android:id/exo_ffwd", "com.udemy.android:id/forward_10", "exo_ffwd"),
                 customRewindIds = listOf("com.udemy.android:id/exo_rew", "com.udemy.android:id/replay_10", "exo_rew"),
                 customNextIds = listOf("com.udemy.android:id/next_lecture_button", "com.udemy.android:id/exo_next"),
+                customSpeedIds = listOf("com.udemy.android:id/playback_rate", "com.udemy.android:id/speed_button"),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -105,6 +114,7 @@ data class TargetAppConfig(
                 isEnabled = true,
                 autoLaunchOverlay = true,
                 customPlayPauseIds = listOf("org.edx.mobile:id/exo_play", "exo_play"),
+                customSpeedIds = listOf("org.edx.mobile:id/btn_playback_speed", "btn_playback_speed"),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -116,6 +126,7 @@ data class TargetAppConfig(
                 isEnabled = true,
                 autoLaunchOverlay = true,
                 customPlayPauseIds = listOf("in.swayam.mobileapp:id/exo_play", "exo_play"),
+                customSpeedIds = listOf("btn_playback_speed", "exo_playback_speed"),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -127,6 +138,7 @@ data class TargetAppConfig(
                 isEnabled = true,
                 autoLaunchOverlay = true,
                 customPlayPauseIds = listOf("exo_play", "exo_pause", "play_pause"),
+                customSpeedIds = listOf("xyz.penpencil.physicswala:id/playback_speed", "xyz.penpencil.physicswala:id/btn_speed"),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -138,6 +150,7 @@ data class TargetAppConfig(
                 isEnabled = true,
                 autoLaunchOverlay = true,
                 customPlayPauseIds = listOf("exo_play", "exo_pause", "player_control_play_pause"),
+                customSpeedIds = listOf("com.unacademyapp:id/speed_button", "speed_button"),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -149,6 +162,7 @@ data class TargetAppConfig(
                 isEnabled = true,
                 autoLaunchOverlay = true,
                 customPlayPauseIds = listOf("exo_play", "btn_play"),
+                customSpeedIds = listOf("btn_playback_speed", "speed_button"),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -178,6 +192,11 @@ data class TargetAppConfig(
                     "com.google.android.youtube:id/next_button",
                     "next_button"
                 ),
+                customSpeedIds = listOf(
+                    "com.google.android.youtube:id/overflow_menu",
+                    "overflow_menu",
+                    "quick_actions_container"
+                ),
                 isBuiltIn = true
             ),
             TargetAppConfig(
@@ -199,6 +218,7 @@ data class TargetAppConfig(
                 isEnabled = true,
                 autoLaunchOverlay = true,
                 customPlayPauseIds = listOf("exo_play", "play_button"),
+                customSpeedIds = listOf("btn_playback_speed", "speed_button"),
                 isBuiltIn = true
             )
         )

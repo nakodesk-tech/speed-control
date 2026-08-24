@@ -173,6 +173,52 @@ fun DashboardScreen() {
                         color = Color(0xFFCBD5E1),
                         lineHeight = 17.sp
                     )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Detected Video Status Banner
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF0F172A).copy(alpha = 0.8f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Column {
+                                Text(
+                                    text = "PLAYBACK DETECTOR",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF94A3B8),
+                                    letterSpacing = 1.sp
+                                )
+                                Text(
+                                    text = state.playbackStatusSource,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (state.isPlaying) Color(0xFF34D399) else Color(0xFFFBBF24)
+                                )
+                            }
+
+                            if (!state.detectedTimecode.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF334155)
+                                ) {
+                                    Text(
+                                        text = state.detectedTimecode ?: "",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

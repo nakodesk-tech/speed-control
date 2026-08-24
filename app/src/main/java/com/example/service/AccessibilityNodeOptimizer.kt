@@ -1,21 +1,25 @@
 package com.example.service
 
 import android.graphics.Rect
+import android.media.AudioManager
 import android.os.SystemClock
+import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.model.MediaActionType
 import com.example.model.NodeInfoSummary
 import com.example.model.TraversalDiagnostics
 import com.example.model.TraversalStrategy
 import java.util.ArrayDeque
+import java.util.Locale
+import kotlin.math.abs
 
 data class OptimizationConfig(
-    val maxDepth: Int = 16,
-    val maxNodesLimit: Int = 300,
+    val maxDepth: Int = 18,
+    val maxNodesLimit: Int = 350,
     val strategy: TraversalStrategy = TraversalStrategy.BFS,
     val checkClickableParents: Boolean = true,
     val enableSmartFallbacks: Boolean = true,
-    val throttleIntervalMs: Long = 60L
+    val throttleIntervalMs: Long = 50L
 )
 
 data class NodeActionResult(
@@ -23,7 +27,27 @@ data class NodeActionResult(
     val clicked: Boolean = false,
     val bounds: Rect = Rect(),
     val matchedViewId: String? = null,
-    val matchedHeuristic: String? = null
+    val matchedHeuristic: String? = null,
+    val isMenuTriggerOnly: Boolean = false
+)
+
+data class PlaybackStatusResult(
+    val isPlaying: Boolean,
+    val confidence: Float,
+    val source: String,
+    val detectedSpeed: String? = null,
+    val timecode: String? = null
+)
+
+data class VideoPlayerTargetDescriptor(
+    val playerBounds: Rect = Rect(),
+    val playerContainerNode: AccessibilityNodeInfo? = null,
+    val playPauseNode: AccessibilityNodeInfo? = null,
+    val isPlayingDetected: Boolean? = null,
+    val speedButtonNode: AccessibilityNodeInfo? = null,
+    val settingsButtonNode: AccessibilityNodeInfo? = null,
+    val timecodeNode: AccessibilityNodeInfo? = null,
+    val speedOptionsAvailable: List<Pair<String, AccessibilityNodeInfo>> = emptyList()
 )
 
 class AccessibilityNodeOptimizer(
@@ -31,9 +55,11 @@ class AccessibilityNodeOptimizer(
 ) {
 
     private var lastActionTimestamp: Long = 0
+    private var previousTimecode: String? = null
+    private var lastTimecodeChangeTime: Long = 0
 
     // Common Resource IDs for educational and video player apps (DIKSHA, ExoPlayer, YouTube, Coursera, Udemy, SWAYAM, BYJU'S, PhysicsWallah, etc.)
-    private val commonPlayPauseIds = listOf(
+    val commonPlayPauseIds = listOf(
         "exo_play", "exo_pause", "play_pause_button", "play_pause", "play_pause_holder",
         "btn_play", "btn_pause", "play_button", "pause_button", "button_play", "button_pause",
         "v_play", "v_pause", "toggle_play_pause", "video_play_pause", "player_control_play_pause",
@@ -59,7 +85,7 @@ class AccessibilityNodeOptimizer(
         "com.google.android.exoplayer2.ui:id/exo_play", "com.google.android.exoplayer2.ui:id/exo_pause"
     )
 
-    private val commonForwardIds = listOf(
+    val commonForwardIds = listOf(
         "exo_ffwd", "exo_fast_forward", "fast_forward_button", "ffwd", "forward_10", "forward_30",
         "btn_ffwd", "btn_forward", "seek_forward", "exo_forward_10", "forward_button",
         "in.gov.diksha.app:id/exo_ffwd", "in.gov.diksha.app:id/exo_fast_forward",
@@ -73,7 +99,7 @@ class AccessibilityNodeOptimizer(
         "androidx.media3.ui:id/exo_ffwd", "com.google.android.exoplayer2.ui:id/exo_ffwd"
     )
 
-    private val commonRewindIds = listOf(
+    val commonRewindIds = listOf(
         "exo_rew", "exo_rewind", "rewind_button", "rew", "replay_10", "replay_30",
         "btn_rew", "btn_rewind", "seek_backward", "exo_rewind_10", "replay_button",
         "in.gov.diksha.app:id/exo_rew", "in.gov.diksha.app:id/exo_rewind",
@@ -87,7 +113,7 @@ class AccessibilityNodeOptimizer(
         "androidx.media3.ui:id/exo_rew", "com.google.android.exoplayer2.ui:id/exo_rew"
     )
 
-    private val commonNextIds = listOf(
+    val commonNextIds = listOf(
         "exo_next", "next_button", "btn_next", "next_video", "next_item_button", "skip_next", "next_lecture",
         "in.gov.diksha.app:id/btn_next", "in.gov.diksha.app:id/next_video",
         "org.khanacademy.android:id/next_item_button", "org.khanacademy.android:id/next_video",
@@ -100,24 +126,525 @@ class AccessibilityNodeOptimizer(
         "androidx.media3.ui:id/exo_next", "com.google.android.exoplayer2.ui:id/exo_next"
     )
 
-    private val commonSpeedIds = listOf(
-        "exo_playback_speed", "playback_speed", "btn_speed", "speed_button", "btn_playback_speed",
-        "speed_setting", "overflow_menu", "settings_button", "player_speed_btn", "speed_control",
-        "player_settings", "controls_settings", "video_quality_and_speed",
+    val commonSpeedIds = listOf(
         "in.gov.diksha.app:id/btn_playback_speed",
-        "org.khanacademy.android:id/speed_button", "org.khanacademy.android:id/btn_speed",
-        "org.coursera.android:id/speed_button", "org.coursera.android:id/playback_speed",
-        "com.udemy.android:id/playback_rate", "com.udemy.android:id/speed_button",
+        "btn_playback_speed",
+        "exo_playback_speed",
+        "playback_speed",
+        "btn_speed",
+        "speed_button",
+        "speed_setting",
+        "player_speed_btn",
+        "speed_control",
+        "playback_rate",
+        "org.khanacademy.android:id/speed_button",
+        "org.khanacademy.android:id/btn_speed",
+        "org.coursera.android:id/speed_button",
+        "org.coursera.android:id/playback_speed",
+        "com.udemy.android:id/playback_rate",
+        "com.udemy.android:id/speed_button",
         "org.edx.mobile:id/btn_playback_speed",
-        "xyz.penpencil.physicswala:id/playback_speed", "xyz.penpencil.physicswala:id/btn_speed",
+        "xyz.penpencil.physicswala:id/playback_speed",
+        "xyz.penpencil.physicswala:id/btn_speed",
         "com.unacademyapp:id/speed_button",
-        "com.google.android.youtube:id/overflow_menu",
-        "com.google.android.youtube:id/quick_actions_container",
-        "androidx.media3.ui:id/exo_playback_speed"
+        "androidx.media3.ui:id/exo_playback_speed",
+        "com.google.android.exoplayer2.ui:id/exo_playback_speed"
     )
 
+    val commonSettingsGearIds = listOf(
+        "overflow_menu",
+        "settings_button",
+        "player_settings",
+        "controls_settings",
+        "video_quality_and_speed",
+        "btn_settings",
+        "more_options",
+        "quick_actions_container",
+        "com.google.android.youtube:id/overflow_menu",
+        "com.google.android.youtube:id/quick_actions_container",
+        "in.gov.diksha.app:id/overflow_menu"
+    )
+
+    val commonTimecodeIds = listOf(
+        "exo_position", "exo_duration", "exo_time", "time_current", "time_total",
+        "current_time", "total_time", "video_current_time", "video_total_time",
+        "in.gov.diksha.app:id/exo_position", "in.gov.diksha.app:id/exo_duration",
+        "com.google.android.youtube:id/time_current", "com.google.android.youtube:id/time_total"
+    )
+
+    // =========================================================================
+    // SPEED NORMALIZATION & EXACT NUMERIC MATCHING
+    // =========================================================================
+
     /**
-     * Executes the requested media action across all available root nodes.
+     * Normalizes a speed string (e.g. "1x", "1.0x", "1.00x", "10x", "10.0x", "Normal") into a canonical Float.
+     */
+    fun normalizeSpeedLabel(speedStr: String?): Float? {
+        if (speedStr.isNullOrBlank()) return null
+        val trimmed = speedStr.trim().lowercase(Locale.US)
+        if (trimmed == "normal" || trimmed == "standard" || trimmed == "default") {
+            return 1.0f
+        }
+        val clean = trimmed.replace("x", "").replace("speed", "").replace(":", "").trim()
+        return clean.toFloatOrNull()
+    }
+
+    /**
+     * Extracts exact numeric speed value from node text, contentDescription, or speed option label.
+     * Prevents false substring matches like "10x" matching "1x" or "1.5x" matching "1x".
+     */
+    fun extractSpeedFromOptionText(raw: String?): Float? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim().lowercase(Locale.US)
+        if (trimmed == "normal" || trimmed == "standard" || trimmed == "default") {
+            return 1.0f
+        }
+
+        // 1. Direct regex for patterns like "10x", "10.0x", "10.00x", "1.25x", "0.75x", "5x", "Normal"
+        // Also supports strings like "Speed 10x", "Playback speed: 1.5x", "10x (Custom)"
+        val speedRegex = Regex("""(?:\b(?:playback\s+speed|speed)\s*[:\s]*)?(\d+(?:\.\d+)?)\s*x\b|^\s*(\d+(?:\.\d+)?)\s*x?\s*$""", RegexOption.IGNORE_CASE)
+        val match = speedRegex.find(trimmed)
+        if (match != null) {
+            val numStr = match.groupValues[1].ifEmpty { match.groupValues[2] }
+            if (numStr.isNotEmpty()) {
+                val parsed = numStr.toFloatOrNull()
+                if (parsed != null) return parsed
+            }
+        }
+
+        // 2. Fallback regex to find isolated numbers with 'x' (e.g., "(1.5x)")
+        val fallbackRegex = Regex("""\b(\d+(?:\.\d+)?)\s*x\b""", RegexOption.IGNORE_CASE)
+        val fallbackMatch = fallbackRegex.find(trimmed)
+        if (fallbackMatch != null) {
+            val numStr = fallbackMatch.groupValues[1]
+            return numStr.toFloatOrNull()
+        }
+
+        // 3. Fallback for pure numbers if short
+        if (trimmed.length in 1..5) {
+            return trimmed.toFloatOrNull()
+        }
+
+        return null
+    }
+
+    /**
+     * Exact float comparison with tolerance for speed matching.
+     */
+    fun speedValuesEqual(speed1: Float, speed2: Float): Boolean {
+        return abs(speed1 - speed2) < 0.01f
+    }
+
+    /**
+     * Checks if a node's text or content description matches the requested numeric speed exactly.
+     */
+    fun matchesRequestedSpeed(nodeText: String?, nodeDesc: String?, targetSpeed: Float): Boolean {
+        val speedFromText = extractSpeedFromOptionText(nodeText)
+        if (speedFromText != null && speedValuesEqual(speedFromText, targetSpeed)) {
+            return true
+        }
+        val speedFromDesc = extractSpeedFromOptionText(nodeDesc)
+        if (speedFromDesc != null && speedValuesEqual(speedFromDesc, targetSpeed)) {
+            return true
+        }
+        return false
+    }
+
+    // =========================================================================
+    // ACCESSIBILITY NODE DISCOVERY & TARGETING
+    // =========================================================================
+
+    /**
+     * Comprehensive Video Player Target Detector:
+     * Identifies player surface, control bounds, settings gear, and open speed menus.
+     */
+    fun inspectVideoPlayerTargets(roots: List<AccessibilityNodeInfo>): VideoPlayerTargetDescriptor {
+        val rect = Rect()
+        var playerBounds = Rect()
+        var playerNode: AccessibilityNodeInfo? = null
+        var playPauseNode: AccessibilityNodeInfo? = null
+        var isPlaying: Boolean? = null
+        var speedBtn: AccessibilityNodeInfo? = null
+        var settingsBtn: AccessibilityNodeInfo? = null
+        var timecodeNode: AccessibilityNodeInfo? = null
+        val speedOptions = mutableListOf<Pair<String, AccessibilityNodeInfo>>()
+
+        val playerKeywords = listOf(
+            "player", "video", "exo", "watch_player", "surface", "texture",
+            "preview", "content_frame", "media", "youtube", "main_content", "diksha"
+        )
+
+        for (root in roots) {
+            val queue = ArrayDeque<AccessibilityNodeInfo>()
+            queue.add(root)
+            var count = 0
+
+            while (queue.isNotEmpty() && count < config.maxNodesLimit) {
+                val node = queue.poll() ?: break
+                count++
+
+                val id = node.viewIdResourceName?.lowercase().orEmpty()
+                val className = node.className?.toString()?.lowercase().orEmpty()
+                val desc = node.contentDescription?.toString()?.lowercase().orEmpty()
+                val text = node.text?.toString()?.lowercase().orEmpty()
+                val combined = "$id $desc $text $className"
+
+                // 1. Identify Video Player Container
+                if (playerNode == null) {
+                    val isCandidate = playerKeywords.any { combined.contains(it) }
+                    if (isCandidate) {
+                        node.getBoundsInScreen(rect)
+                        if (rect.width() > 200 && rect.height() > 150) {
+                            playerBounds = Rect(rect)
+                            playerNode = node
+                        }
+                    }
+                }
+
+                // 2. Identify Play/Pause Button & Status
+                if (playPauseNode == null) {
+                    if (id.contains("pause") || desc.contains("pause") || text.contains("pause")) {
+                        playPauseNode = node
+                        isPlaying = true
+                    } else if (id.contains("play") || desc.contains("play") || text.contains("play") || desc.contains("resume")) {
+                        playPauseNode = node
+                        isPlaying = false
+                    }
+                }
+
+                // 3. Identify Speed Setting Button
+                if (speedBtn == null) {
+                    if (commonSpeedIds.any { id.contains(it) } ||
+                        ((desc.contains("playback speed") || text.contains("playback speed") || desc.contains("playback rate")) && (node.isClickable || node.parent?.isClickable == true))
+                    ) {
+                        speedBtn = node
+                    }
+                }
+
+                // 4. Identify Settings / Overflow Menu on Player
+                if (settingsBtn == null) {
+                    if (commonSettingsGearIds.any { id.contains(it) } ||
+                        desc.contains("settings") || desc.contains("more options") || desc.contains("quality")
+                    ) {
+                        settingsBtn = node
+                    }
+                }
+
+                // 5. Identify Timecode node
+                if (timecodeNode == null) {
+                    if (commonTimecodeIds.any { id.contains(it) } || (text.contains(":") && (text.length in 4..15))) {
+                        timecodeNode = node
+                    }
+                }
+
+                // 6. Check for active Speed Options in dialogs/sheets
+                val speedVal = extractSpeedFromOptionText(text).let { if (it != null) String.format(Locale.US, "%.2fx", it) else null }
+                    ?: extractSpeedFromOptionText(desc).let { if (it != null) String.format(Locale.US, "%.2fx", it) else null }
+                if (speedVal != null) {
+                    if (node.isClickable || node.parent?.isClickable == true) {
+                        speedOptions.add(Pair(speedVal, node))
+                    }
+                }
+
+                for (i in 0 until node.childCount) {
+                    node.getChild(i)?.let { queue.add(it) }
+                }
+            }
+        }
+
+        return VideoPlayerTargetDescriptor(
+            playerBounds = playerBounds,
+            playerContainerNode = playerNode,
+            playPauseNode = playPauseNode,
+            isPlayingDetected = isPlaying,
+            speedButtonNode = speedBtn,
+            settingsButtonNode = settingsBtn,
+            timecodeNode = timecodeNode,
+            speedOptionsAvailable = speedOptions
+        )
+    }
+
+    /**
+     * Searches all window roots for the EXACT requested speed option node (e.g. 1.25x, 2.0x, 5.0x, 10.0x).
+     */
+    fun findExactSpeedOptionNode(roots: List<AccessibilityNodeInfo>, targetSpeed: Float): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        for (root in roots) {
+            queue.add(root)
+        }
+
+        var visited = 0
+        while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
+            val curr = queue.poll() ?: break
+            visited++
+
+            val text = curr.text?.toString()
+            val desc = curr.contentDescription?.toString()
+
+            if (matchesRequestedSpeed(text, desc, targetSpeed)) {
+                // Return the node or its clickable container
+                if (curr.isClickable) {
+                    return curr
+                }
+                // Check immediate clickable parent
+                var p = curr.parent
+                var depth = 0
+                while (p != null && depth < 4) {
+                    if (p.isClickable) return p
+                    p = p.parent
+                    depth++
+                }
+                return curr
+            }
+
+            for (i in 0 until curr.childCount) {
+                curr.getChild(i)?.let { queue.add(it) }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Finds the speed trigger button in the video controls across all window roots.
+     */
+    fun findSpeedTriggerNode(
+        roots: List<AccessibilityNodeInfo>,
+        customIds: List<String> = emptyList()
+    ): AccessibilityNodeInfo? {
+        val targetIds = customIds + commonSpeedIds
+
+        // 1. Direct Resource ID lookup across roots
+        for (root in roots) {
+            for (resId in targetIds) {
+                try {
+                    val matches = root.findAccessibilityNodeInfosByViewId(resId)
+                    if (!matches.isNullOrEmpty()) {
+                        for (m in matches) {
+                            if (m.isClickable || m.parent?.isClickable == true) return m
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        // 2. Traversal by text / content description
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        for (root in roots) {
+            queue.add(root)
+        }
+
+        var visited = 0
+        while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
+            val curr = queue.poll() ?: break
+            visited++
+
+            val id = curr.viewIdResourceName?.lowercase().orEmpty()
+            val desc = curr.contentDescription?.toString()?.lowercase().orEmpty()
+            val text = curr.text?.toString()?.lowercase().orEmpty()
+
+            if (targetIds.any { id.contains(it.lowercase()) } ||
+                desc.contains("playback speed") || text.contains("playback speed") ||
+                desc.contains("playback rate") || text.contains("playback rate") ||
+                ((desc.contains("speed") || text.contains("speed")) && (curr.isClickable || curr.parent?.isClickable == true))
+            ) {
+                if (curr.isClickable || curr.parent?.isClickable == true) {
+                    return curr
+                }
+            }
+
+            for (i in 0 until curr.childCount) {
+                curr.getChild(i)?.let { queue.add(it) }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Finds the Settings / Gear / Overflow menu button on the video player.
+     */
+    fun findSettingsGearNode(roots: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
+        for (root in roots) {
+            for (resId in commonSettingsGearIds) {
+                try {
+                    val matches = root.findAccessibilityNodeInfosByViewId(resId)
+                    if (!matches.isNullOrEmpty()) {
+                        for (m in matches) {
+                            if (m.isClickable || m.parent?.isClickable == true) return m
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        for (root in roots) {
+            queue.add(root)
+        }
+
+        var visited = 0
+        while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
+            val curr = queue.poll() ?: break
+            visited++
+
+            val id = curr.viewIdResourceName?.lowercase().orEmpty()
+            val desc = curr.contentDescription?.toString()?.lowercase().orEmpty()
+
+            if (commonSettingsGearIds.any { id.contains(it) } ||
+                desc.contains("settings") || desc.contains("more options") || desc.contains("player options")
+            ) {
+                if (curr.isClickable || curr.parent?.isClickable == true) {
+                    return curr
+                }
+            }
+
+            for (i in 0 until curr.childCount) {
+                curr.getChild(i)?.let { queue.add(it) }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Finds "Playback speed" item inside a settings menu popup / bottom sheet.
+     */
+    fun findPlaybackSpeedMenuItem(roots: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        for (root in roots) {
+            queue.add(root)
+        }
+
+        var visited = 0
+        while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
+            val curr = queue.poll() ?: break
+            visited++
+
+            val text = curr.text?.toString()?.lowercase().orEmpty()
+            val desc = curr.contentDescription?.toString()?.lowercase().orEmpty()
+            val id = curr.viewIdResourceName?.lowercase().orEmpty()
+
+            if (text.contains("playback speed") || desc.contains("playback speed") ||
+                text.contains("playback rate") || desc.contains("playback rate") ||
+                (text.contains("speed") && !text.contains("quality"))
+            ) {
+                if (curr.isClickable || curr.parent?.isClickable == true) {
+                    return curr
+                }
+            }
+
+            for (i in 0 until curr.childCount) {
+                curr.getChild(i)?.let { queue.add(it) }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Detects currently active/selected playback speed from active UI nodes (speed button text, radio button, etc.)
+     */
+    fun detectCurrentSelectedSpeed(roots: List<AccessibilityNodeInfo>): Float? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        for (root in roots) {
+            queue.add(root)
+        }
+
+        var visited = 0
+        while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
+            val curr = queue.poll() ?: break
+            visited++
+
+            val id = curr.viewIdResourceName?.lowercase().orEmpty()
+            val text = curr.text?.toString().orEmpty()
+            val desc = curr.contentDescription?.toString().orEmpty()
+
+            // Check if this is a speed button showing current speed (e.g. DIKSHA btn_playback_speed displaying "1.25x")
+            if (commonSpeedIds.any { id.contains(it) }) {
+                val speed = extractSpeedFromOptionText(text) ?: extractSpeedFromOptionText(desc)
+                if (speed != null) return speed
+            }
+
+            // Check if node is a selected/checked radio button or chip
+            if (curr.isSelected || curr.isChecked) {
+                val speed = extractSpeedFromOptionText(text) ?: extractSpeedFromOptionText(desc)
+                if (speed != null) return speed
+            }
+
+            for (i in 0 until curr.childCount) {
+                curr.getChild(i)?.let { queue.add(it) }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Multi-tier Robust Playback Status Detector:
+     * Combines Accessibility Node state, Timecode advancement, and System AudioManager output.
+     */
+    fun detectVideoPlaybackStatus(
+        roots: List<AccessibilityNodeInfo>,
+        audioManager: AudioManager?
+    ): PlaybackStatusResult {
+        val targets = inspectVideoPlayerTargets(roots)
+
+        val currentTimecode = targets.timecodeNode?.text?.toString()
+        val detectedSpeed: String? = targets.speedOptionsAvailable.firstOrNull()?.first
+
+        // Heuristic 1: Inspect explicit play/pause button state in node hierarchy
+        if (targets.isPlayingDetected != null) {
+            val playing = targets.isPlayingDetected
+            return PlaybackStatusResult(
+                isPlaying = playing,
+                confidence = 0.95f,
+                source = if (playing) "Player Node (Active Pause Button)" else "Player Node (Active Play Button)",
+                detectedSpeed = detectedSpeed,
+                timecode = currentTimecode
+            )
+        }
+
+        // Heuristic 2: Check Timecode advancement
+        val now = SystemClock.uptimeMillis()
+        if (!currentTimecode.isNullOrBlank()) {
+            if (previousTimecode != null && previousTimecode != currentTimecode) {
+                lastTimecodeChangeTime = now
+                previousTimecode = currentTimecode
+                return PlaybackStatusResult(
+                    isPlaying = true,
+                    confidence = 0.90f,
+                    source = "Timecode Advancing ($currentTimecode)",
+                    detectedSpeed = detectedSpeed,
+                    timecode = currentTimecode
+                )
+            }
+            previousTimecode = currentTimecode
+        }
+
+        // Heuristic 3: Check System AudioManager media audio stream activity
+        val isMusicActive = audioManager?.isMusicActive == true
+        if (isMusicActive) {
+            return PlaybackStatusResult(
+                isPlaying = true,
+                confidence = 0.85f,
+                source = "Active Audio Stream (Hardware Media Channel)",
+                detectedSpeed = detectedSpeed,
+                timecode = currentTimecode
+            )
+        }
+
+        return PlaybackStatusResult(
+            isPlaying = false,
+            confidence = 0.50f,
+            source = "Default (Controls Inactive / Standby)",
+            detectedSpeed = detectedSpeed,
+            timecode = currentTimecode
+        )
+    }
+
+    /**
+     * Executes the requested media action across all available root nodes with precision targeting.
      */
     fun performMediaActionAcrossRoots(
         roots: List<AccessibilityNodeInfo>,
@@ -200,26 +727,26 @@ class AccessibilityNodeOptimizer(
         }
         lastActionTimestamp = now
 
-        // Step 1: Check if target action is 10x Speed or Specific Speed
-        if (actionType == MediaActionType.SPEED_10X || actionType == MediaActionType.SPEED_SET) {
-            val speedLabel = speedTargetText ?: if (actionType == MediaActionType.SPEED_10X) "10x" else "2.0x"
+        // STEP 1: Speed Selection
+        if (actionType == MediaActionType.SPEED_10X || actionType == MediaActionType.SPEED_SET || actionType == MediaActionType.SPEED_TOGGLE) {
+            val speedLabel = speedTargetText ?: if (actionType == MediaActionType.SPEED_10X) "10.0x" else "1.0x"
             val speedResult = attemptSpeedSelection(rootNode, speedLabel)
-            if (speedResult.clicked) {
+            if (speedResult.clicked && !speedResult.isMenuTriggerOnly) {
                 val duration = SystemClock.uptimeMillis() - startTime
                 return TraversalDiagnostics(
                     lastScanTimeMs = System.currentTimeMillis(),
                     scanDurationMs = duration,
-                    totalNodesVisited = 15,
+                    totalNodesVisited = 20,
                     maxDepthReached = 3,
                     matchedAction = actionType,
                     matchedViewId = speedResult.matchedViewId,
-                    matchedByHeuristic = speedResult.matchedHeuristic ?: "Direct Speed Selection",
+                    matchedByHeuristic = speedResult.matchedHeuristic ?: "Direct Speed Selection ($speedLabel)",
                     success = true
                 )
             }
         }
 
-        // Step 2: Direct Resource ID lookup (Fastest O(1) - O(k))
+        // STEP 2: Direct Resource ID Lookup
         val targetIds = when (actionType) {
             MediaActionType.PLAY_PAUSE, MediaActionType.PLAY, MediaActionType.PAUSE -> customIds + commonPlayPauseIds
             MediaActionType.FAST_FORWARD -> customIds + commonForwardIds
@@ -234,8 +761,6 @@ class AccessibilityNodeOptimizer(
                 val matches = rootNode.findAccessibilityNodeInfosByViewId(resId)
                 if (!matches.isNullOrEmpty()) {
                     for (node in matches) {
-                        val rect = Rect()
-                        node.getBoundsInScreen(rect)
                         if (executeClick(node)) {
                             val duration = SystemClock.uptimeMillis() - startTime
                             return TraversalDiagnostics(
@@ -252,11 +777,11 @@ class AccessibilityNodeOptimizer(
                     }
                 }
             } catch (_: Exception) {
-                // Ignore and continue fallback
+                // Continue fallback
             }
         }
 
-        // Step 3: Traverse Hierarchy based on Strategy (BFS or DFS)
+        // STEP 3: Traverse Hierarchy based on Strategy (BFS or DFS)
         val traversalResult = when (config.strategy) {
             TraversalStrategy.BFS -> traverseBfs(rootNode, actionType)
             TraversalStrategy.DFS -> traverseDfs(rootNode, actionType)
@@ -271,124 +796,43 @@ class AccessibilityNodeOptimizer(
     }
 
     /**
-     * Finds the best target node and returns its bounding coordinates for gesture fallback.
+     * Precision Speed Selection:
+     * Searches for exact speed option node and clicks it.
+     * Note: Does NOT return clicked=true when only a menu trigger was clicked.
      */
-    fun findTargetNodeWithBounds(
-        rootNode: AccessibilityNodeInfo?,
-        actionType: MediaActionType,
-        customIds: List<String> = emptyList()
-    ): NodeActionResult {
-        if (rootNode == null) return NodeActionResult()
-        val rect = Rect()
+    fun attemptSpeedSelection(root: AccessibilityNodeInfo, targetSpeed: String): NodeActionResult {
+        val targetSpeedFloat = normalizeSpeedLabel(targetSpeed) ?: 1.0f
+        val exactOption = findExactSpeedOptionNode(listOf(root), targetSpeedFloat)
 
-        // 1. Try resource IDs
-        val targetIds = when (actionType) {
-            MediaActionType.PLAY_PAUSE, MediaActionType.PLAY, MediaActionType.PAUSE -> customIds + commonPlayPauseIds
-            MediaActionType.FAST_FORWARD -> customIds + commonForwardIds
-            MediaActionType.REWIND -> customIds + commonRewindIds
-            MediaActionType.NEXT -> customIds + commonNextIds
-            MediaActionType.SPEED_TOGGLE, MediaActionType.SPEED_10X -> customIds + commonSpeedIds
-            else -> customIds
-        }
-
-        for (resId in targetIds) {
-            try {
-                val matches = rootNode.findAccessibilityNodeInfosByViewId(resId)
-                if (!matches.isNullOrEmpty()) {
-                    val first = matches.first()
-                    first.getBoundsInScreen(rect)
-                    val clicked = executeClick(first)
-                    return NodeActionResult(
-                        node = first,
-                        clicked = clicked,
-                        bounds = rect,
-                        matchedViewId = resId,
-                        matchedHeuristic = "ID Match: $resId"
-                    )
-                }
-            } catch (_: Exception) {}
-        }
-
-        // 2. BFS heuristic search
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(rootNode)
-        var visited = 0
-
-        while (queue.isNotEmpty() && visited < config.maxNodesLimit) {
-            val curr = queue.poll() ?: break
-            visited++
-
-            if (matchesActionHeuristic(curr, actionType)) {
-                curr.getBoundsInScreen(rect)
-                val clicked = executeClick(curr)
+        if (exactOption != null) {
+            val rect = Rect()
+            exactOption.getBoundsInScreen(rect)
+            val clicked = executeClick(exactOption)
+            if (clicked) {
                 return NodeActionResult(
-                    node = curr,
-                    clicked = clicked,
+                    node = exactOption,
+                    clicked = true,
                     bounds = rect,
-                    matchedViewId = curr.viewIdResourceName,
-                    matchedHeuristic = "Heuristic: ${curr.className}"
+                    matchedViewId = exactOption.viewIdResourceName,
+                    matchedHeuristic = "Exact Speed Option Match ($targetSpeed)",
+                    isMenuTriggerOnly = false
                 )
-            }
-
-            for (i in 0 until curr.childCount) {
-                val c = curr.getChild(i)
-                if (c != null) queue.add(c)
             }
         }
 
-        return NodeActionResult()
-    }
-
-    private fun attemptSpeedSelection(root: AccessibilityNodeInfo, targetSpeed: String): NodeActionResult {
-        val rect = Rect()
-        // Try finding speed menu item containing "10x", "10", "2.0x", etc.
-        val searchLabels = listOf(targetSpeed, targetSpeed.lowercase(), targetSpeed.replace("x", ""), "speed $targetSpeed")
-
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        var visited = 0
-
-        while (queue.isNotEmpty() && visited < 120) {
-            val curr = queue.poll() ?: break
-            visited++
-
-            val text = curr.text?.toString()?.lowercase().orEmpty()
-            val desc = curr.contentDescription?.toString()?.lowercase().orEmpty()
-            val id = curr.viewIdResourceName?.lowercase().orEmpty()
-
-            val isSpeedMatch = searchLabels.any { label ->
-                text.contains(label.lowercase()) || desc.contains(label.lowercase())
-            }
-
-            if (isSpeedMatch) {
-                curr.getBoundsInScreen(rect)
-                val clicked = executeClick(curr)
-                return NodeActionResult(
-                    node = curr,
-                    clicked = clicked,
-                    bounds = rect,
-                    matchedViewId = curr.viewIdResourceName,
-                    matchedHeuristic = "Speed Option Match ($targetSpeed)"
-                )
-            }
-
-            // Also check if this is the speed settings trigger button
-            if (id.contains("speed") || desc.contains("speed") || text.contains("speed")) {
-                curr.getBoundsInScreen(rect)
-                val clicked = executeClick(curr)
-                return NodeActionResult(
-                    node = curr,
-                    clicked = clicked,
-                    bounds = rect,
-                    matchedViewId = curr.viewIdResourceName,
-                    matchedHeuristic = "Speed Trigger Button Clicked"
-                )
-            }
-
-            for (i in 0 until curr.childCount) {
-                val child = curr.getChild(i)
-                if (child != null) queue.add(child)
-            }
+        // If direct speed option was not visible, check for speed trigger button
+        val speedSettingsNode = findSpeedTriggerNode(listOf(root))
+        if (speedSettingsNode != null) {
+            val rect = Rect()
+            speedSettingsNode.getBoundsInScreen(rect)
+            return NodeActionResult(
+                node = speedSettingsNode,
+                clicked = false, // Menu trigger found, but actual speed option is not yet selected!
+                bounds = rect,
+                matchedViewId = speedSettingsNode.viewIdResourceName,
+                matchedHeuristic = "Speed Menu Trigger Found",
+                isMenuTriggerOnly = true
+            )
         }
 
         return NodeActionResult()
@@ -504,16 +948,12 @@ class AccessibilityNodeOptimizer(
             MediaActionType.PREVIOUS -> {
                 combined.contains("previous") || combined.contains("prev")
             }
-            MediaActionType.SPEED_TOGGLE -> {
-                combined.contains("speed") || combined.contains("playback rate") ||
-                        combined.contains("1.0x") || combined.contains("1.25x") || combined.contains("1.5x") ||
-                        combined.contains("2.0x") || combined.contains("10x")
+            MediaActionType.SPEED_TOGGLE, MediaActionType.SPEED_SET -> {
+                combined.contains("playback speed") || combined.contains("playback rate") ||
+                        (combined.contains("speed") && !combined.contains("time"))
             }
             MediaActionType.SPEED_10X -> {
-                combined.contains("10x") || combined.contains("10.0x") || combined.contains("speed") || combined.contains("turbo")
-            }
-            MediaActionType.SPEED_SET -> {
-                combined.contains("speed") || combined.contains("playback")
+                combined.contains("10x") || combined.contains("10.0x") || combined.contains("turbo")
             }
             MediaActionType.CAPTIONS -> {
                 combined.contains("caption") || combined.contains("subtitles") ||
@@ -535,11 +975,11 @@ class AccessibilityNodeOptimizer(
             if (clicked) return true
         }
 
-        // Check parents
+        // Check parents up to 5 levels
         if (config.checkClickableParents) {
             var parent = node.parent
             var depthCheck = 0
-            while (parent != null && depthCheck < 4) {
+            while (parent != null && depthCheck < 5) {
                 if (parent.isClickable) {
                     val clicked = parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     if (clicked) return true
@@ -613,7 +1053,7 @@ class AccessibilityNodeOptimizer(
             combined.contains("rew") || combined.contains("rewind") -> MediaActionType.REWIND
             combined.contains("next") || combined.contains("skip") -> MediaActionType.NEXT
             combined.contains("10x") || combined.contains("turbo") -> MediaActionType.SPEED_10X
-            combined.contains("speed") -> MediaActionType.SPEED_TOGGLE
+            combined.contains("playback speed") || combined.contains("playback rate") -> MediaActionType.SPEED_TOGGLE
             combined.contains("caption") || combined.contains("cc") -> MediaActionType.CAPTIONS
             else -> null
         }
