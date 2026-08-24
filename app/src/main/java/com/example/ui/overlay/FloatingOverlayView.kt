@@ -494,7 +494,86 @@ fun FloatingOverlayView(
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Section 5: Real Video Player Hierarchy Scanner
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "ACCESSIBILITY SCANNER",
+                                color = Color(0xFF94A3B8),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                            if (state.currentDiscoverySnapshot != null) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = Color(0xFF065F46)
+                                ) {
+                                    Text(
+                                        text = "${state.currentDiscoverySnapshot?.totalNodesCaptured} nodes scanned",
+                                        color = Color(0xFF34D399),
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF0284C7),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        CompanionStateManager.triggerDiscoveryScan(com.example.model.DiscoveryScanType.CONTROLS_VISIBLE)
+                                    }
+                                    .padding(vertical = 6.dp)
+                                    .testTag("overlay_scan_controls_btn")
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Speed, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("Scan Controls (A)", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF4F46E5),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        CompanionStateManager.triggerDiscoveryScan(com.example.model.DiscoveryScanType.SPEED_MENU_OPEN)
+                                    }
+                                    .padding(vertical = 6.dp)
+                                    .testTag("overlay_scan_menu_btn")
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Bolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("Scan Speed Menu (B)", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
 
                         // Status Note
                         Row(
@@ -507,7 +586,7 @@ fun FloatingOverlayView(
                                 fontSize = 9.sp
                             )
                             Text(
-                                text = "1x – 10x Speed Active",
+                                text = if (state.allDiscoveredSpeedList.isNotEmpty()) "${state.allDiscoveredSpeedList.size} speeds found" else "1x – 10x Ready",
                                 color = Color(0xFF38BDF8),
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.SemiBold

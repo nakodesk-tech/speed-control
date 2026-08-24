@@ -367,6 +367,83 @@ fun DashboardScreen() {
             }
         }
 
+        // Section: Quick Video Player Discovery Trigger
+        item {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF131B2E)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFF0284C7).copy(alpha = 0.4f), RoundedCornerShape(20.dp))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column {
+                            Text(
+                                text = "ACCESSIBILITY PLAYER DISCOVERY",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF38BDF8),
+                                letterSpacing = 1.sp
+                            )
+                            Text(
+                                text = "Deep node capture for DIKSHA & iGOT Karmayogi",
+                                fontSize = 12.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
+                        if (state.currentDiscoverySnapshot != null) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF065F46)
+                            ) {
+                                Text(
+                                    text = "${state.currentDiscoverySnapshot?.allDiscoveredSpeeds?.size} speeds found",
+                                    color = Color(0xFF34D399),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Button(
+                            onClick = {
+                                CompanionStateManager.triggerDiscoveryScan(com.example.model.DiscoveryScanType.CONTROLS_VISIBLE)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).testTag("dashboard_scan_controls_btn")
+                        ) {
+                            Text("Scan Controls (A)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                CompanionStateManager.triggerDiscoveryScan(com.example.model.DiscoveryScanType.SPEED_MENU_OPEN)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.weight(1f).testTag("dashboard_scan_menu_btn")
+                        ) {
+                            Text("Scan Speed Menu (B)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
         // Section: Live Speed Controller (1x to 10x)
         item {
             Card(

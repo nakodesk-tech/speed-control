@@ -1,5 +1,9 @@
 package com.example.service
 
+import com.example.model.DiscoveredNodeDetail
+import com.example.model.DiscoveredSpeedOption
+import com.example.model.DiscoveryScanType
+import com.example.model.DiscoverySnapshot
 import com.example.model.MediaActionType
 import com.example.model.NodeInfoSummary
 import com.example.model.SimulatedNode
@@ -33,7 +37,13 @@ data class CompanionUiState(
     val totalActionsPerformed: Int = 0,
     val autoSkipEnabled: Boolean = false,
     val autoSkipDelaySeconds: Int = 5,
-    val optimizationConfig: OptimizationConfig = OptimizationConfig()
+    val optimizationConfig: OptimizationConfig = OptimizationConfig(),
+    // Discovery Mode State
+    val currentDiscoverySnapshot: DiscoverySnapshot? = null,
+    val controlsVisibleSnapshot: DiscoverySnapshot? = null,
+    val speedMenuSnapshot: DiscoverySnapshot? = null,
+    val allDiscoveredSpeedList: List<DiscoveredSpeedOption> = emptyList(),
+    val isScanningInProgress: Boolean = false
 )
 
 object CompanionStateManager {
@@ -199,6 +209,201 @@ object CompanionStateManager {
         } else {
             simulateMediaAction(actionType, param)
         }
+    }
+
+    // =========================================================================
+    // DISCOVERY SCANNING WORKFLOW
+    // =========================================================================
+
+    fun triggerDiscoveryScan(scanType: DiscoveryScanType = DiscoveryScanType.FULL_PLAYER_SCAN): DiscoverySnapshot {
+        _uiState.value = _uiState.value.copy(isScanningInProgress = true)
+        val service = accessibilityService
+        val snapshot = if (service != null && service.isServiceBound) {
+            service.performDiscoveryScan(scanType)
+        } else {
+            simulateDiscoveryScan(scanType)
+        }
+        updateDiscoverySnapshot(snapshot)
+        _uiState.value = _uiState.value.copy(isScanningInProgress = false)
+        return snapshot
+    }
+
+    fun updateDiscoverySnapshot(snapshot: DiscoverySnapshot) {
+        val current = _uiState.value
+        val newControlsSnapshot = if (snapshot.scanType == DiscoveryScanType.CONTROLS_VISIBLE) snapshot else current.controlsVisibleSnapshot
+        val newSpeedMenuSnapshot = if (snapshot.scanType == DiscoveryScanType.SPEED_MENU_OPEN) snapshot else current.speedMenuSnapshot
+
+        // Convert discovered nodes to Live Node Tree summaries for UI visualization
+        val summaries = snapshot.allNodes.map {
+            NodeInfoSummary(
+                id = it.id,
+                className = it.className,
+                text = it.text,
+                contentDescription = it.contentDescription,
+                viewIdResourceName = it.viewIdResourceName,
+                isClickable = it.isClickable,
+                isVisibleToUser = it.isVisibleToUser,
+                bounds = it.bounds,
+                depth = it.depth,
+                childCount = it.childCount,
+                detectedRole = when {
+                    it.isSpeedCandidate -> MediaActionType.SPEED_SET
+                    it.isPlayPauseCandidate -> MediaActionType.PLAY_PAUSE
+                    it.isSettingsCandidate -> MediaActionType.SPEED_TOGGLE
+                    else -> null
+                }
+            )
+        }
+
+        _uiState.value = current.copy(
+            currentDiscoverySnapshot = snapshot,
+            controlsVisibleSnapshot = newControlsSnapshot,
+            speedMenuSnapshot = newSpeedMenuSnapshot,
+            allDiscoveredSpeedList = snapshot.allDiscoveredSpeeds,
+            liveNodeTree = summaries
+        )
+    }
+
+    fun clearDiscoverySnapshots() {
+        _uiState.value = _uiState.value.copy(
+            currentDiscoverySnapshot = null,
+            controlsVisibleSnapshot = null,
+            speedMenuSnapshot = null,
+            allDiscoveredSpeedList = emptyList()
+        )
+    }
+
+    private fun simulateDiscoveryScan(scanType: DiscoveryScanType): DiscoverySnapshot {
+        val mockTree = createMockDikshaHierarchy()
+        val flattened = mutableListOf<SimulatedNode>()
+        fun flatten(n: SimulatedNode, depth: Int = 0) {
+            flattened.add(n)
+            n.children.forEach { flatten(it, depth + 1) }
+        }
+        flatten(mockTree)
+
+        val optimizer = AccessibilityNodeOptimizer()
+        val allNodes = mutableListOf<DiscoveredNodeDetail>()
+        val speedNodes = mutableListOf<DiscoveredNodeDetail>()
+        val playNodes = mutableListOf<DiscoveredNodeDetail>()
+        val settingsNodes = mutableListOf<DiscoveredNodeDetail>()
+        val speedOptions = mutableListOf<DiscoveredSpeedOption>()
+        val treeDump = StringBuilder()
+
+        flattened.forEachIndexed { index, node ->
+            val text = node.text
+            val desc = node.contentDescription
+            val id = node.viewIdResourceName
+            val combined = "${id.orEmpty()} ${desc.orEmpty()} ${text.orEmpty()} ${node.className}".lowercase(Locale.US)
+
+            val speedFromText = optimizer.extractSpeedFromOptionText(text)
+            val speedFromDesc = optimizer.extractSpeedFromOptionText(desc)
+            val speedVal = speedFromText ?: speedFromDesc
+
+            val isSpeed = combined.contains("speed") || combined.contains("playback") || speedVal != null || combined.contains("10x")
+            val isPlay = combined.contains("play") || combined.contains("pause")
+            val isSettings = combined.contains("settings") || combined.contains("overflow")
+
+            val rawLog = "ID: ${id ?: "<no_id>"} | TEXT: \"${text ?: ""}\" | DESC: \"${desc ?: ""}\" | CLASS: ${node.className} | CLICKABLE: ${node.isClickable} | VISIBLE: ${node.isVisibleToUser} | BOUNDS: ${node.bounds} | PARENT_ID: <simulated>"
+
+            val detail = DiscoveredNodeDetail(
+                id = "sim_node_$index",
+                className = node.className,
+                viewIdResourceName = id,
+                text = text,
+                contentDescription = desc,
+                isClickable = node.isClickable,
+                isVisibleToUser = node.isVisibleToUser,
+                isEnabled = true,
+                isSelected = false,
+                isChecked = false,
+                bounds = node.bounds,
+                depth = index % 4,
+                childCount = node.children.size,
+                parentId = if (index > 0) "in.gov.diksha.app:id/player_view_container" else null,
+                parentText = null,
+                parentClass = "android.widget.RelativeLayout",
+                parentClickable = true,
+                matchedKeywords = listOf("speed", "playback", "1x", "10x").filter { combined.contains(it) },
+                isSpeedCandidate = isSpeed,
+                isPlayPauseCandidate = isPlay,
+                isSettingsCandidate = isSettings,
+                detectedSpeedValue = speedVal,
+                rawLogText = rawLog
+            )
+
+            allNodes.add(detail)
+            if (isSpeed) speedNodes.add(detail)
+            if (isPlay) playNodes.add(detail)
+            if (isSettings) settingsNodes.add(detail)
+
+            if (speedVal != null) {
+                val label = String.format(Locale.US, "%.2fx", speedVal).replace(".00x", ".0x")
+                speedOptions.add(
+                    DiscoveredSpeedOption(
+                        speedLabel = label,
+                        speedFloat = speedVal,
+                        viewId = id,
+                        text = text,
+                        contentDescription = desc,
+                        className = node.className,
+                        isClickable = node.isClickable,
+                        isSelected = label == _uiState.value.currentPlaybackSpeed,
+                        isChecked = false,
+                        bounds = node.bounds,
+                        parentViewId = "in.gov.diksha.app:id/speed_options_container",
+                        parentText = null,
+                        parentClass = "android.widget.LinearLayout",
+                        parentClickable = true
+                    )
+                )
+            }
+
+            val indent = "  ".repeat(index % 4)
+            treeDump.appendLine("$indent├─ [${node.className.substringAfterLast('.')}] id=\"$id\" text=\"$text\" desc=\"$desc\" [CLICKABLE: ${node.isClickable}] ${node.bounds}")
+        }
+
+        val report = buildString {
+            appendLine("==================================================")
+            appendLine("ACCESSIBILITY PLAYER DISCOVERY REPORT (SIMULATION)")
+            appendLine("Scan Type: ${scanType.displayName}")
+            appendLine("Foreground Package: in.gov.diksha.app (DIKSHA LMS / Portal)")
+            appendLine("Total Nodes Visited: ${allNodes.size}")
+            appendLine("Discovered Playback Speeds: ${speedOptions.size}")
+            appendLine("==================================================")
+            appendLine()
+            appendLine("--- DISCOVERED PLAYBACK SPEED OPTIONS (${speedOptions.size}) ---")
+            speedOptions.forEachIndexed { i, opt ->
+                appendLine("[Option #${i + 1}] SPEED: ${opt.speedLabel}")
+                appendLine("  ID:           ${opt.viewId ?: "<no_id>"}")
+                appendLine("  TEXT:         \"${opt.text ?: ""}\"")
+                appendLine("  DESCRIPTION:  \"${opt.contentDescription ?: ""}\"")
+                appendLine("  CLASS:        ${opt.className}")
+                appendLine("  CLICKABLE:    ${opt.isClickable} (Parent clickable: ${opt.parentClickable})")
+                appendLine("  BOUNDS:       ${opt.bounds}")
+                appendLine("  PARENT ID:    ${opt.parentViewId ?: "<none>"}")
+                appendLine()
+            }
+            appendLine("==================================================")
+            appendLine("FULL NODE TREE HIERARCHY")
+            appendLine("==================================================")
+            append(treeDump.toString())
+        }
+
+        return DiscoverySnapshot(
+            scanType = scanType,
+            foregroundPackage = "in.gov.diksha.app",
+            foregroundAppTitle = "DIKSHA LMS / Portal",
+            totalNodesCaptured = allNodes.size,
+            maxDepth = 4,
+            speedCandidateNodes = speedNodes,
+            playPauseCandidateNodes = playNodes,
+            settingsCandidateNodes = settingsNodes,
+            allDiscoveredSpeeds = speedOptions,
+            allNodes = allNodes,
+            formattedReport = report,
+            rawHierarchyTreeDump = treeDump.toString()
+        )
     }
 
     fun simulateMediaAction(actionType: MediaActionType, param: String? = null) {

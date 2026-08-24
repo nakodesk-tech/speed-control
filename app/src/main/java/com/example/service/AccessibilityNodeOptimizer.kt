@@ -1040,6 +1040,298 @@ class AccessibilityNodeOptimizer(
         return list
     }
 
+    // =========================================================================
+    // FULL ACCESSIBILITY DIAGNOSTIC / DISCOVERY SCANNER (UP TO 2500+ NODES)
+    // =========================================================================
+
+    private val discoveryKeywords = listOf(
+        "speed", "playback", "rate",
+        "1x", "1.0x", "1.25x", "1.5x", "1.75x", "2x", "2.0x", "2.5x", "3x", "4x", "5x", "7.5x", "10x",
+        "settings", "more", "options", "overflow",
+        "play", "pause"
+    )
+
+    /**
+     * Captures and analyzes the real Accessibility hierarchy without stopping at small node caps.
+     * Allows 2000+ nodes to discover real player IDs, speed menus, and clickable controls.
+     */
+    fun performDiagnosticDiscoveryScan(
+        roots: List<AccessibilityNodeInfo>,
+        scanType: com.example.model.DiscoveryScanType = com.example.model.DiscoveryScanType.FULL_PLAYER_SCAN,
+        foregroundPkg: String = "",
+        foregroundTitle: String = "",
+        maxNodesLimit: Int = 2500
+    ): com.example.model.DiscoverySnapshot {
+        val startTime = System.currentTimeMillis()
+        val allNodes = mutableListOf<com.example.model.DiscoveredNodeDetail>()
+        val speedCandidateNodes = mutableListOf<com.example.model.DiscoveredNodeDetail>()
+        val playPauseCandidateNodes = mutableListOf<com.example.model.DiscoveredNodeDetail>()
+        val settingsCandidateNodes = mutableListOf<com.example.model.DiscoveredNodeDetail>()
+        val discoveredSpeedOptions = mutableListOf<com.example.model.DiscoveredSpeedOption>()
+        val treeDumpBuilder = StringBuilder()
+        val rect = Rect()
+        var maxDepthReached = 0
+
+        fun processNode(
+            node: AccessibilityNodeInfo,
+            depth: Int,
+            parentInfo: AccessibilityNodeInfo?,
+            rootIndex: Int
+        ) {
+            if (allNodes.size >= maxNodesLimit) return
+            if (depth > maxDepthReached) maxDepthReached = depth
+
+            try {
+                node.getBoundsInScreen(rect)
+                val boundsStr = "[${rect.left},${rect.top}][${rect.right},${rect.bottom}]"
+                val classNameStr = node.className?.toString().orEmpty()
+                val idStr = node.viewIdResourceName
+                val textStr = node.text?.toString()
+                val descStr = node.contentDescription?.toString()
+                val clickable = node.isClickable
+                val visible = node.isVisibleToUser
+                val enabled = node.isEnabled
+                val selected = node.isSelected
+                val checked = node.isChecked
+                val childCount = node.childCount
+
+                var parentId: String? = null
+                var parentText: String? = null
+                var parentClass: String? = null
+                var parentClickable = false
+
+                if (parentInfo != null) {
+                    parentId = parentInfo.viewIdResourceName
+                    parentText = parentInfo.text?.toString()
+                    parentClass = parentInfo.className?.toString()
+                    parentClickable = parentInfo.isClickable
+                } else if (node.parent != null) {
+                    try {
+                        val p = node.parent
+                        parentId = p.viewIdResourceName
+                        parentText = p.text?.toString()
+                        parentClass = p.className?.toString()
+                        parentClickable = p.isClickable
+                    } catch (_: Exception) {}
+                }
+
+                // Check keywords
+                val combinedText = "${idStr.orEmpty()} ${descStr.orEmpty()} ${textStr.orEmpty()} $classNameStr".lowercase(Locale.US)
+                val matched = mutableListOf<String>()
+                for (kw in discoveryKeywords) {
+                    if (combinedText.contains(kw)) {
+                        matched.add(kw)
+                    }
+                }
+
+                // Check speed option representation
+                val speedFromText = extractSpeedFromOptionText(textStr)
+                val speedFromDesc = extractSpeedFromOptionText(descStr)
+                val detectedSpeed = speedFromText ?: speedFromDesc
+
+                val isSpeed = combinedText.contains("speed") || combinedText.contains("playback") ||
+                        combinedText.contains("rate") || detectedSpeed != null ||
+                        matched.any { it.contains("x") }
+
+                val isPlayPause = (combinedText.contains("play") || combinedText.contains("pause") || combinedText.contains("resume")) &&
+                        !combinedText.contains("playback speed") && !combinedText.contains("playback rate")
+
+                val isSettings = combinedText.contains("settings") || combinedText.contains("more options") ||
+                        combinedText.contains("overflow") || combinedText.contains("quality") || combinedText.contains("menu")
+
+                val rawLog = "ID: ${idStr ?: "<no_id>"} | TEXT: \"${textStr ?: ""}\" | DESC: \"${descStr ?: ""}\" | CLASS: $classNameStr | CLICKABLE: $clickable | VISIBLE: $visible | SELECTED: $selected | CHECKED: $checked | BOUNDS: $boundsStr | PARENT_ID: ${parentId ?: "<none>"} | PARENT_TEXT: \"${parentText ?: ""}\""
+
+                val nodeDetail = com.example.model.DiscoveredNodeDetail(
+                    id = "root_${rootIndex}_node_${allNodes.size}",
+                    className = classNameStr,
+                    viewIdResourceName = idStr,
+                    text = textStr,
+                    contentDescription = descStr,
+                    isClickable = clickable,
+                    isVisibleToUser = visible,
+                    isEnabled = enabled,
+                    isSelected = selected,
+                    isChecked = checked,
+                    bounds = boundsStr,
+                    depth = depth,
+                    childCount = childCount,
+                    parentId = parentId,
+                    parentText = parentText,
+                    parentClass = parentClass,
+                    parentClickable = parentClickable,
+                    matchedKeywords = matched,
+                    isSpeedCandidate = isSpeed,
+                    isPlayPauseCandidate = isPlayPause,
+                    isSettingsCandidate = isSettings,
+                    detectedSpeedValue = detectedSpeed,
+                    rawLogText = rawLog
+                )
+
+                allNodes.add(nodeDetail)
+
+                if (isSpeed) speedCandidateNodes.add(nodeDetail)
+                if (isPlayPause) playPauseCandidateNodes.add(nodeDetail)
+                if (isSettings) settingsCandidateNodes.add(nodeDetail)
+
+                // Track speed options
+                if (detectedSpeed != null) {
+                    val label = String.format(Locale.US, "%.2fx", detectedSpeed).replace(".00x", ".0x")
+                    discoveredSpeedOptions.add(
+                        com.example.model.DiscoveredSpeedOption(
+                            speedLabel = label,
+                            speedFloat = detectedSpeed,
+                            viewId = idStr,
+                            text = textStr,
+                            contentDescription = descStr,
+                            className = classNameStr,
+                            isClickable = clickable,
+                            isSelected = selected,
+                            isChecked = checked,
+                            bounds = boundsStr,
+                            parentViewId = parentId,
+                            parentText = parentText,
+                            parentClass = parentClass,
+                            parentClickable = parentClickable
+                        )
+                    )
+                }
+
+                // Append to hierarchy tree string with depth indentation
+                val indent = "  ".repeat(depth)
+                val nodeLabel = buildString {
+                    append(indent)
+                    append("├─ [")
+                    append(classNameStr.substringAfterLast('.'))
+                    append("]")
+                    if (!idStr.isNullOrBlank()) append(" id=\"$idStr\"")
+                    if (!textStr.isNullOrBlank()) append(" text=\"$textStr\"")
+                    if (!descStr.isNullOrBlank()) append(" desc=\"$descStr\"")
+                    if (clickable) append(" [CLICKABLE]")
+                    if (selected) append(" [SELECTED]")
+                    if (checked) append(" [CHECKED]")
+                    append(" $boundsStr")
+                }
+                treeDumpBuilder.appendLine(nodeLabel)
+
+                // Recurse children
+                for (i in 0 until childCount) {
+                    try {
+                        val child = node.getChild(i)
+                        if (child != null) {
+                            processNode(child, depth + 1, node, rootIndex)
+                        }
+                    } catch (_: Exception) {}
+                }
+            } catch (e: Exception) {
+                Log.e("VideoPlayerDiscovery", "Error processing node at depth $depth", e)
+            }
+        }
+
+        // Process all roots
+        for ((rootIdx, root) in roots.withIndex()) {
+            treeDumpBuilder.appendLine("=== WINDOW ROOT #$rootIdx (${root.packageName}) ===")
+            processNode(root, 0, null, rootIdx)
+        }
+
+        // Build human-readable formatted report
+        val formattedReport = buildString {
+            appendLine("==================================================")
+            appendLine("ACCESSIBILITY PLAYER DISCOVERY REPORT")
+            appendLine("Scan Type: ${scanType.displayName}")
+            appendLine("Foreground Package: $foregroundPkg ($foregroundTitle)")
+            appendLine("Total Nodes Visited: ${allNodes.size} (Limit: $maxNodesLimit)")
+            appendLine("Max Tree Depth: $maxDepthReached")
+            appendLine("Active Window Roots: ${roots.size}")
+            appendLine("Scan Time: ${System.currentTimeMillis() - startTime}ms")
+            appendLine("==================================================")
+            appendLine()
+
+            appendLine("--- DISCOVERED PLAYBACK SPEED OPTIONS (${discoveredSpeedOptions.size}) ---")
+            if (discoveredSpeedOptions.isEmpty()) {
+                appendLine("No direct speed options found. (Open speed menu in target app and scan again)")
+            } else {
+                discoveredSpeedOptions.forEachIndexed { i, opt ->
+                    appendLine("[Option #${i + 1}] SPEED: ${opt.speedLabel}")
+                    appendLine("  ID:           ${opt.viewId ?: "<no_id>"}")
+                    appendLine("  TEXT:         \"${opt.text ?: ""}\"")
+                    appendLine("  DESCRIPTION:  \"${opt.contentDescription ?: ""}\"")
+                    appendLine("  CLASS:        ${opt.className}")
+                    appendLine("  CLICKABLE:    ${opt.isClickable} (Parent clickable: ${opt.parentClickable})")
+                    appendLine("  SELECTED:     ${opt.isSelected} | CHECKED: ${opt.isChecked}")
+                    appendLine("  BOUNDS:       ${opt.bounds}")
+                    appendLine("  PARENT ID:    ${opt.parentViewId ?: "<none>"}")
+                    appendLine("  PARENT TEXT:  \"${opt.parentText ?: ""}\"")
+                    appendLine("  PARENT CLASS: ${opt.parentClass ?: "<none>"}")
+                    appendLine()
+                }
+            }
+
+            appendLine("--- SPEED / RATE CANDIDATE NODES (${speedCandidateNodes.size}) ---")
+            if (speedCandidateNodes.isEmpty()) {
+                appendLine("No speed-related keyword nodes found.")
+            } else {
+                speedCandidateNodes.forEachIndexed { i, node ->
+                    appendLine("[Candidate #${i + 1}]")
+                    appendLine("  ID:          ${node.viewIdResourceName ?: "<no_id>"}")
+                    appendLine("  TEXT:        \"${node.text ?: ""}\"")
+                    appendLine("  DESCRIPTION: \"${node.contentDescription ?: ""}\"")
+                    appendLine("  CLASS:       ${node.className}")
+                    appendLine("  CLICKABLE:   ${node.isClickable} (Parent clickable: ${node.parentClickable})")
+                    appendLine("  VISIBLE:     ${node.isVisibleToUser}")
+                    appendLine("  SELECTED:    ${node.isSelected} | CHECKED: ${node.isChecked}")
+                    appendLine("  BOUNDS:      ${node.bounds}")
+                    appendLine("  PARENT ID:   ${node.parentId ?: "<none>"}")
+                    appendLine("  PARENT TEXT: \"${node.parentText ?: ""}\"")
+                    appendLine()
+                }
+            }
+
+            appendLine("--- PLAY / PAUSE CANDIDATE NODES (${playPauseCandidateNodes.size}) ---")
+            if (playPauseCandidateNodes.isEmpty()) {
+                appendLine("No play/pause keyword nodes found.")
+            } else {
+                playPauseCandidateNodes.forEachIndexed { i, node ->
+                    appendLine("[Media #${i + 1}] ID: ${node.viewIdResourceName ?: "<no_id>"} | TEXT: \"${node.text ?: ""}\" | DESC: \"${node.contentDescription ?: ""}\" | CLICKABLE: ${node.isClickable} | BOUNDS: ${node.bounds}")
+                }
+                appendLine()
+            }
+
+            appendLine("--- SETTINGS / OVERFLOW CANDIDATE NODES (${settingsCandidateNodes.size}) ---")
+            if (settingsCandidateNodes.isEmpty()) {
+                appendLine("No settings/more/overflow keyword nodes found.")
+            } else {
+                settingsCandidateNodes.forEachIndexed { i, node ->
+                    appendLine("[Setting #${i + 1}] ID: ${node.viewIdResourceName ?: "<no_id>"} | DESC: \"${node.contentDescription ?: ""}\" | CLICKABLE: ${node.isClickable} | BOUNDS: ${node.bounds}")
+                }
+                appendLine()
+            }
+
+            appendLine("==================================================")
+            appendLine("FULL NODE TREE HIERARCHY")
+            appendLine("==================================================")
+            append(treeDumpBuilder.toString())
+        }
+
+        // Output to Logcat
+        Log.i("VideoPlayerDiscovery", "====== DISCOVERY SCAN COMPLETE: ${allNodes.size} nodes, ${discoveredSpeedOptions.size} speed options ======")
+        Log.i("VideoPlayerDiscovery", formattedReport)
+
+        return com.example.model.DiscoverySnapshot(
+            scanType = scanType,
+            foregroundPackage = foregroundPkg,
+            foregroundAppTitle = foregroundTitle,
+            totalNodesCaptured = allNodes.size,
+            maxDepth = maxDepthReached,
+            speedCandidateNodes = speedCandidateNodes,
+            playPauseCandidateNodes = playPauseCandidateNodes,
+            settingsCandidateNodes = settingsCandidateNodes,
+            allDiscoveredSpeeds = discoveredSpeedOptions,
+            allNodes = allNodes,
+            formattedReport = formattedReport,
+            rawHierarchyTreeDump = treeDumpBuilder.toString()
+        )
+    }
+
     private fun detectRole(node: AccessibilityNodeInfo): MediaActionType? {
         val viewId = node.viewIdResourceName?.lowercase().orEmpty()
         val desc = node.contentDescription?.toString()?.lowercase().orEmpty()

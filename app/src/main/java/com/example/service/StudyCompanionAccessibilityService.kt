@@ -161,6 +161,30 @@ class StudyCompanionAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Performs a comprehensive diagnostic scan across all window roots with up to 2500+ node limit.
+     * Logs full node tree, discovers actual playback speed options, settings nodes, and media controls.
+     */
+    fun performDiscoveryScan(
+        scanType: com.example.model.DiscoveryScanType = com.example.model.DiscoveryScanType.FULL_PLAYER_SCAN
+    ): com.example.model.DiscoverySnapshot {
+        val roots = getAllWindowRoots()
+        val state = CompanionStateManager.uiState.value
+        val currentPkg = state.foregroundPackage
+        val currentTitle = state.foregroundAppTitle
+
+        val snapshot = optimizer.performDiagnosticDiscoveryScan(
+            roots = roots,
+            scanType = scanType,
+            foregroundPkg = currentPkg,
+            foregroundTitle = currentTitle,
+            maxNodesLimit = 2500
+        )
+
+        CompanionStateManager.updateDiscoverySnapshot(snapshot)
+        return snapshot
+    }
+
+    /**
      * Detects on-screen bounding rectangle of the video player in the foreground app.
      */
     fun detectPlayerBounds(roots: List<AccessibilityNodeInfo>): Rect {

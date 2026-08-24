@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -31,11 +32,13 @@ import androidx.compose.ui.unit.dp
 import com.example.service.CompanionStateManager
 import com.example.ui.screens.AppsManagerScreen
 import com.example.ui.screens.DashboardScreen
+import com.example.ui.screens.DiscoveryScreen
 import com.example.ui.theme.EduCompanionTheme
 
 enum class MainTab(val title: String, val icon: ImageVector, val tag: String) {
     SPEED_CONTROLLER("Speed Controller", Icons.Default.Speed, "tab_dashboard"),
-    VIDEO_APPS("Video Apps", Icons.Default.Apps, "tab_apps")
+    VIDEO_APPS("Video Apps", Icons.Default.Apps, "tab_apps"),
+    DIAGNOSTICS("Node Discovery", Icons.Default.Search, "tab_diagnostics")
 }
 
 class MainActivity : ComponentActivity() {
@@ -110,6 +113,7 @@ fun MainAppContainer() {
             when (tab) {
                 MainTab.SPEED_CONTROLLER -> DashboardScreen()
                 MainTab.VIDEO_APPS -> AppsManagerScreen()
+                MainTab.DIAGNOSTICS -> DiscoveryScreen()
             }
         }
     }

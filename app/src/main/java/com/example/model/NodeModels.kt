@@ -22,6 +22,72 @@ enum class TraversalStrategy(val displayName: String, val description: String) {
     ID_FIRST_DIRECT("Resource ID Direct Cache", "Tries known view IDs directly before falling back to full tree scan")
 }
 
+enum class DiscoveryScanType(val displayName: String) {
+    CONTROLS_VISIBLE("Controls Visible Layer (Scan A)"),
+    SPEED_MENU_OPEN("Speed Menu Open (Scan B)"),
+    FULL_PLAYER_SCAN("Full Video Player Scan")
+}
+
+data class DiscoveredSpeedOption(
+    val speedLabel: String,
+    val speedFloat: Float,
+    val viewId: String?,
+    val text: String?,
+    val contentDescription: String?,
+    val className: String,
+    val isClickable: Boolean,
+    val isSelected: Boolean,
+    val isChecked: Boolean,
+    val bounds: String,
+    val parentViewId: String?,
+    val parentText: String?,
+    val parentClass: String?,
+    val parentClickable: Boolean
+)
+
+data class DiscoveredNodeDetail(
+    val id: String,
+    val className: String,
+    val viewIdResourceName: String?,
+    val text: String?,
+    val contentDescription: String?,
+    val isClickable: Boolean,
+    val isVisibleToUser: Boolean,
+    val isEnabled: Boolean,
+    val isSelected: Boolean,
+    val isChecked: Boolean,
+    val bounds: String,
+    val depth: Int,
+    val childCount: Int,
+    val parentId: String? = null,
+    val parentText: String? = null,
+    val parentClass: String? = null,
+    val parentClickable: Boolean = false,
+    val matchedKeywords: List<String> = emptyList(),
+    val isSpeedCandidate: Boolean = false,
+    val isPlayPauseCandidate: Boolean = false,
+    val isSettingsCandidate: Boolean = false,
+    val detectedSpeedValue: Float? = null,
+    val rawLogText: String = ""
+)
+
+data class DiscoverySnapshot(
+    val id: String = System.currentTimeMillis().toString(),
+    val timestampMs: Long = System.currentTimeMillis(),
+    val scanType: DiscoveryScanType = DiscoveryScanType.FULL_PLAYER_SCAN,
+    val foregroundPackage: String = "",
+    val foregroundAppTitle: String = "",
+    val totalNodesCaptured: Int = 0,
+    val maxDepth: Int = 0,
+    val speedCandidateNodes: List<DiscoveredNodeDetail> = emptyList(),
+    val playPauseCandidateNodes: List<DiscoveredNodeDetail> = emptyList(),
+    val settingsCandidateNodes: List<DiscoveredNodeDetail> = emptyList(),
+    val allDiscoveredSpeeds: List<DiscoveredSpeedOption> = emptyList(),
+    val allNodes: List<DiscoveredNodeDetail> = emptyList(),
+    val formattedReport: String = "",
+    val rawHierarchyTreeDump: String = ""
+)
+
 data class NodeInfoSummary(
     val id: String,
     val className: String,

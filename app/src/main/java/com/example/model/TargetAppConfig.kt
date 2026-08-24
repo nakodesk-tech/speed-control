@@ -32,7 +32,7 @@ data class TargetAppConfig(
                 packageName = "in.gov.diksha.app",
                 displayName = "DIKSHA (National Ed Portal)",
                 category = AppCategory.GOVERNMENT_ED,
-                description = "Digital Infrastructure for Knowledge Sharing (India)",
+                description = "Digital Infrastructure for Knowledge Sharing (National Portal)",
                 iconName = "diksha",
                 isEnabled = true,
                 autoLaunchOverlay = true,
@@ -52,6 +52,26 @@ data class TargetAppConfig(
                     "btn_playback_speed",
                     "exo_playback_speed"
                 ),
+                isBuiltIn = true
+            ),
+            TargetAppConfig(
+                packageName = "com.diksha.lms",
+                displayName = "DIKSHA LMS",
+                category = AppCategory.GOVERNMENT_ED,
+                description = "DIKSHA Learning Management System (LMS Video Courses)",
+                iconName = "diksha_lms",
+                isEnabled = true,
+                autoLaunchOverlay = true,
+                isBuiltIn = true
+            ),
+            TargetAppConfig(
+                packageName = "com.igot.karmyogibharat",
+                displayName = "iGOT Karmayogi Bharat",
+                category = AppCategory.GOVERNMENT_ED,
+                description = "National Programme for Civil Services Capacity Building & Video Lectures",
+                iconName = "igot",
+                isEnabled = true,
+                autoLaunchOverlay = true,
                 isBuiltIn = true
             ),
             TargetAppConfig(
